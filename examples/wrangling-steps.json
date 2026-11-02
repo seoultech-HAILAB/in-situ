@@ -1,0 +1,41 @@
+[
+  {
+    "statement_indices": [
+      0
+    ],
+    "label": "고객명 정리"
+  },
+  {
+    "statement_indices": [
+      1,
+      2,
+      3
+    ],
+    "label": "주문 데이터 정리"
+  },
+  {
+    "statement_indices": [
+      4,
+      5
+    ],
+    "label": "완료 주문 매출"
+  },
+  {
+    "statement_indices": [
+      6
+    ],
+    "label": "고객 지역 연결"
+  },
+  {
+    "statement_indices": [
+      7
+    ],
+    "label": "지역·월 집계"
+  },
+  {
+    "statement_indices": [
+      8
+    ],
+    "label": "월별 표 재구조화"
+  }
+]

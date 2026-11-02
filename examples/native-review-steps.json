@@ -1,0 +1,24 @@
+[
+  {
+    "label": "금액 계산",
+    "statement_indices": [
+      0,
+      1
+    ],
+    "output_variable": "s1"
+  },
+  {
+    "label": "행 선택",
+    "statement_indices": [
+      2
+    ],
+    "output_variable": "s2"
+  },
+  {
+    "label": "결과 열 선택",
+    "statement_indices": [
+      3
+    ],
+    "output_variable": "result"
+  }
+]

@@ -1,0 +1,15 @@
+name: 팀 파일럿 피드백
+description: 과제 선택과 사용성 개선을 위한 내부 관찰을 기록합니다.
+title: '[파일럿] '
+body:
+  - type: input
+    id: candidate
+    attributes:
+      label: 후보 ID와 조건 (A/B2/C)
+  - type: textarea
+    id: feedback
+    attributes:
+      label: 시도한 동작·관찰 결과·기대 동작
+      description: 재현 절차와 불편한 부분을 적어주세요. 접속 비밀번호나 개인 세션 전체는 첨부하지 마세요.
+    validations:
+      required: true

@@ -1,0 +1,30 @@
+name: 과제 후보 검토
+description: 파일럿에서 시험할 과제와 선정 근거를 기록합니다. 최종 실험 과제 확정을 뜻하지 않습니다.
+title: '[과제 후보] '
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: 과제 설명과 데이터 출처
+      description: 고정 과제 설명, 출처·라이선스, 후보 ID를 적어주세요. 민감한 실제 데이터는 첨부하지 마세요.
+    validations:
+      required: true
+  - type: dropdown
+    id: origin
+    attributes:
+      label: 초기 코드의 출처
+      options:
+        - 실제 모델 생성 결과
+        - 연구자가 오류를 삽입한 코드
+        - 기능 확인용 데모
+        - 아직 미정
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 재현 자료와 실행 정보
+      description: Input/Target·추가 표·코드·Step 자료의 저장소 경로, 모델 식별자, 호출 횟수, 실행 버전. 개인 세션이나 키는 업로드하지 마세요.
+  - type: textarea
+    id: observations
+    attributes:
+      label: 실행과 검수 관찰
+      description: 실행 여부, 연구자 확인 결과, 표 크기·시각화 적합성, 발견·수정 난이도, 채택/보류 이유. 참가자에게 제공할 설명과 구분합니다.

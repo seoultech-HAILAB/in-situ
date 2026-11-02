@@ -1,0 +1,22 @@
+.venv/
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+.local/
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+# Local research material and participant records are not source distribution.
+/planning/
+/references/
+/output/
+/tmp/
+/evidence/*
+!/evidence/VALIDATION.md
+!/evidence/MODEL_VERIFICATION.md
+!/evidence/TEAM_SETUP.md
+*.pdf
+*.zip

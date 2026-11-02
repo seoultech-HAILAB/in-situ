@@ -1,0 +1,7 @@
+order_id,customer_id,order_date,quantity,price,status
+O1,C1,2026-01-01,2,10, done 
+O2,C1,2026-02-01,3,10,Done
+O3,C2,2026-01-03,4,5,done
+O4,C2,2026-01-04,bad,5,done
+O5,C2,2026-02-01,1,5,cancelled
+O2,C1,2026-02-01,3,10,Done

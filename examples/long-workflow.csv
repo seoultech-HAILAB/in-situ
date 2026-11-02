@@ -1,0 +1,13 @@
+order_id,region,quantity,price
+O01,Seoul,2,10000
+O02,Busan,3,15000
+O03,Seoul,,8000
+O04,Daegu,4,7000
+O05,,5,12000
+O06,Busan,1,6000
+O06,Busan,1,6000
+O07,Daegu,2,9000
+O08,Seoul,5,5000
+O09,Busan,2,10000
+O10,Daegu,1,11000
+O11,Seoul,3,4000
