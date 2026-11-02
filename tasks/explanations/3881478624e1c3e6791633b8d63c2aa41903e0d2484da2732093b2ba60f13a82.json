@@ -1,0 +1,48 @@
+{
+  "prompt_version": "executed-code-korean-prose-v3",
+  "model": "gpt-6-luna",
+  "generated_at": "2026-11-02T14:17:34.705116+00:00",
+  "steps": [
+    {
+      "step_no": 1,
+      "title": "손님별 요리 기록 구성",
+      "text": "주문표 첫 행에서 비어 있지 않고 ‘Unnamed:’로 시작하지 않는 손님 이름을 찾고, 각 손님의 요리 열과 바로 오른쪽 선택 열을 짝지어 기록합니다. 요리 이름이 ‘starter’, ‘main’, ‘dessert’로 시작하면 코스를 각각 ‘Starters’, ‘Mains’, ‘Dessert’로 설정하며, 그 외 행은 손님·요리·선택 여부·현재 코스를 기록합니다."
+    },
+    {
+      "step_no": 2,
+      "title": "선택된 요리 추리기",
+      "text": "요리 이름이 비어 있지 않고 선택 열이 ‘🗸’와 정확히 일치하는 행만 남깁니다. 남은 요리 이름은 문자열로 바꾸고 작은따옴표를 오른쪽 작은따옴표로 치환합니다."
+    },
+    {
+      "step_no": 3,
+      "title": "레시피 정보 연결",
+      "text": "조회표의 요리 이름에도 같은 따옴표 치환을 적용한 뒤, 요리 이름을 기준으로 왼쪽 연결합니다. 연결된 ‘Recipe ID’는 정수로 변환한 다음 문자열로 바꿉니다."
+    },
+    {
+      "step_no": 4,
+      "title": "결과 열 구성과 정렬",
+      "text": "‘Guest’, ‘Course’, ‘Recipe ID’, ‘Dish’ 열만 남기고 세 열을 오름차순으로 안정 정렬합니다. 이후 ‘Recipe ID’를 숫자로 변환하며, 숫자로 바꿀 수 없는 값은 결측값으로 처리합니다."
+    }
+  ],
+  "columns": [
+    {
+      "step_no": 2,
+      "operation_no": 4,
+      "column": "Dish",
+      "text": "문자열로 변환 후 작은따옴표를 오른쪽 작은따옴표로 치환"
+    },
+    {
+      "step_no": 3,
+      "operation_no": 2,
+      "column": "Dish",
+      "text": "문자열로 변환 후 작은따옴표를 오른쪽 작은따옴표로 치환"
+    },
+    {
+      "step_no": 3,
+      "operation_no": 4,
+      "column": "Recipe ID",
+      "text": "정수로 변환 후 문자열로 변환"
+    }
+  ],
+  "observation_sha256": "3881478624e1c3e6791633b8d63c2aa41903e0d2484da2732093b2ba60f13a82"
+}

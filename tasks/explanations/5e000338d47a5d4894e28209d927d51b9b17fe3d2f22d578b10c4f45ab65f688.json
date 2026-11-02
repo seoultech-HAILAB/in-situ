@@ -1,0 +1,42 @@
+{
+  "prompt_version": "executed-code-korean-prose-v3",
+  "model": "gpt-6-luna",
+  "generated_at": "2026-11-02T14:17:22.449888+00:00",
+  "steps": [
+    {
+      "step_no": 1,
+      "title": "상품 가격 정리",
+      "text": "상품 표의 `Red`와 `Yellow`에서 양끝의 큰따옴표를 제거한 뒤 숫자로 변환하고, 숫자로 바꿀 수 없는 값은 결측값으로 처리합니다. 두 가격을 행마다 합산하되 둘 다 결측이면 합계도 결측으로 두고, `product_id`가 반복되는 행은 하나만 남깁니다."
+    },
+    {
+      "step_no": 2,
+      "title": "주문 표 추리기",
+      "text": "`table_2`에서 `Delivered`가 결측이 아닌 행만 남기고 `order_id`와 `Delivered` 열을 가져옵니다. 주문 ID의 양끝 큰따옴표를 제거하고 숫자로 변환해 정수형으로 바꾸며, `Delivered` 열 이름을 `date_order_placed`로 바꿉니다."
+    },
+    {
+      "step_no": 3,
+      "title": "배송 완료 품목 추리기",
+      "text": "`table_3`의 상태 열에서 문자열 `nan`을 결측값으로 바꾸고, 세 ID 조각을 숫자로 변환합니다. 상태가 정확히 `Delivered`인 품목만 남긴 뒤 `id_part1`을 `order_id`로, `id_part2`를 `product_id`로 사용합니다."
+    },
+    {
+      "step_no": 4,
+      "title": "주문별 가격 합산",
+      "text": "배송 완료 주문과 배송 완료 품목을 주문 ID로 내부 연결하고, 상품 표의 가격을 상품 ID로 왼쪽 연결합니다. 주문별 상품 가격 합계를 구한 뒤 합계가 있는 주문만 주문 날짜와 함께 남기고, 주문 ID 기준 중복을 제거해 오름차순으로 정렬합니다."
+    }
+  ],
+  "columns": [
+    {
+      "step_no": 2,
+      "operation_no": 4,
+      "column": "order_id",
+      "text": "양끝 큰따옴표 제거 후 숫자로 변환하고 정수형으로 변경"
+    },
+    {
+      "step_no": 4,
+      "operation_no": 5,
+      "column": "product_price",
+      "text": "주문 ID별 상품 가격 합계"
+    }
+  ],
+  "observation_sha256": "5e000338d47a5d4894e28209d927d51b9b17fe3d2f22d578b10c4f45ab65f688"
+}

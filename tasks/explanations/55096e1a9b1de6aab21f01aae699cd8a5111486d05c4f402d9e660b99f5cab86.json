@@ -1,0 +1,29 @@
+{
+  "prompt_version": "executed-code-korean-prose-v3",
+  "model": "gpt-6-luna",
+  "generated_at": "2026-11-02T14:17:59.683564+00:00",
+  "steps": [
+    {
+      "step_no": 1,
+      "title": "대상 이벤트 선택",
+      "text": "table_2에서 ety_cd가 ‘Exam’ 또는 ‘Registration’인 행만 남깁니다."
+    },
+    {
+      "step_no": 2,
+      "title": "학생 정보 추리기",
+      "text": "입력 표에서 student_id와 bio_data 열만 복사합니다."
+    },
+    {
+      "step_no": 3,
+      "title": "이벤트와 학생 정보 연결",
+      "text": "student_id가 일치하는 행끼리 이벤트 표와 학생 정보를 내부 연결합니다."
+    },
+    {
+      "step_no": 4,
+      "title": "결과 열 선택",
+      "text": "연결된 표에서 bio_data와 event_date만 남기고, 행 번호를 0부터 다시 매깁니다."
+    }
+  ],
+  "columns": [],
+  "observation_sha256": "55096e1a9b1de6aab21f01aae699cd8a5111486d05c4f402d9e660b99f5cab86"
+}

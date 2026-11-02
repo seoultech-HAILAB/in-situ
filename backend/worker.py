@@ -6,19 +6,18 @@ from pathlib import Path
 sys.stdin.reconfigure(encoding='utf-8')
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
-if sys.platform != 'win32':
-    import resource
-    resource.setrlimit(resource.RLIMIT_AS, (768*1024*1024, 768*1024*1024))
-    resource.setrlimit(resource.RLIMIT_CPU, (15, 15))
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 if len(sys.argv)>1:
     sys.path.insert(0,sys.argv[1])
-from backend.engine import parse_table
-from backend.runtime import run
-from backend.python_runtime import run as python_run, install_audit
-
 if __name__=='__main__':
     try:
+        if sys.platform != 'win32':
+            import resource
+            from backend.worker_limits import install_posix_limits
+            install_posix_limits(sys.platform, resource)
+        from backend.engine import parse_table
+        from backend.runtime import run
+        from backend.python_runtime import run as python_run, install_audit
         body=json.loads(sys.stdin.read(3_000_001))
         if body.get('engine')=='python':
             install_audit()

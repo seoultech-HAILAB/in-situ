@@ -1,0 +1,48 @@
+{
+  "prompt_version": "executed-code-korean-prose-v3",
+  "model": "gpt-6-luna",
+  "generated_at": "2026-11-02T14:17:28.142030+00:00",
+  "steps": [
+    {
+      "step_no": 1,
+      "title": "학술대회 속성 정리",
+      "text": "입력 표를 복사한 뒤 학술대회 이름의 앞뒤 공백을 제거하고 대문자로 바꿉니다. `value` 값을 숫자로 변환하며, 숫자로 바꿀 수 없는 값은 결측값으로 처리합니다."
+    },
+    {
+      "step_no": 2,
+      "title": "캐나다 국적 직원 선택",
+      "text": "직원 표를 직원 ID 기준으로 전치하고, 전치된 행 이름을 숫자로 바꿉니다. `Nationality`가 `Canada`와 같은 직원을 선택해 이들의 ID를 모읍니다."
+    },
+    {
+      "step_no": 3,
+      "title": "배정 기록에서 직원 ID 추출",
+      "text": "배정 표의 `conference_staff` 값을 하이픈으로 나누고 첫 부분을 정수형 직원 ID로 저장합니다. 해당 ID가 캐나다 국적 직원 ID에 포함된 기록만 남기고, 그 기록의 직원 ID를 모읍니다."
+    },
+    {
+      "step_no": 4,
+      "title": "해당 학술대회 이름 추출",
+      "text": "`attr`가 `Conference_ID`이고 `Conference_ID`가 앞서 모은 ID에 포함된 행을 선택합니다. 이름의 중복을 제거하고 열 이름을 `Conference_Name`으로 바꾼 뒤 행 번호를 다시 매겨 결과로 반환합니다."
+    }
+  ],
+  "columns": [
+    {
+      "step_no": 1,
+      "operation_no": 2,
+      "column": "conf",
+      "text": "앞뒤 공백 제거"
+    },
+    {
+      "step_no": 1,
+      "operation_no": 3,
+      "column": "conf",
+      "text": "대문자로 변환"
+    },
+    {
+      "step_no": 1,
+      "operation_no": 4,
+      "column": "Conference_ID",
+      "text": "`value`를 숫자로 변환하고 변환 실패는 결측값 처리"
+    }
+  ],
+  "observation_sha256": "5e90956c4a962d22886cd679741d8df621ef4582ccbfceea22a4d44854fa3bfe"
+}

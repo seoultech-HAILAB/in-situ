@@ -162,7 +162,7 @@ def execute(s, code, assumptions, mode, request=None, groups=None, prepared=None
               'comparison': compare(stages[-1]['table'], s['target']),
               'execution_ms': round((time.perf_counter() - start) * 1000, 2),
               'parent_run_id': current(s)['id'] if current(s) else None,
-              'runtime': {'python': platform.python_version(), 'pandas': pd.__version__, 'engine': 'native-python-v3' if plan['engine']=='python' else 'capability-pandas-v2', 'wall_limit_seconds': 20, 'process_memory_mb': 512 if os.name == 'nt' else None, 'credentials_in_worker': False},
+              'runtime': {'python': platform.python_version(), 'pandas': pd.__version__, 'engine': 'native-python-v3' if plan['engine']=='python' else 'capability-pandas-v2', 'wall_limit_seconds': 20, 'process_memory_mb': 512 if os.name == 'nt' else 768, 'credentials_in_worker': False},
               'generator_settings': {'model': os.getenv('OPENAI_MODEL', DEFAULT_MODEL), 'reasoning_effort': os.getenv('OPENAI_REASONING_EFFORT'), 'contract': 'semantic-steps-and-patches-v3'} if mode == 'api' else None,
               'generator_model': os.getenv('OPENAI_MODEL', DEFAULT_MODEL) if mode == 'api' else None}
     s['runs'].append(result)

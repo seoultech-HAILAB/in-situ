@@ -1,4 +1,5 @@
-"""Researcher-only task fixtures. Data stays outside the source repository."""
+"""Bundled research fixtures with a writable local catalog."""
+import hashlib
 import json
 import os
 import re
@@ -15,14 +16,24 @@ def directory():
     configured=os.getenv('TRACE_TASK_DIR')
     if configured:return Path(configured)
     folder=ROOT/'.local/pilot/candidates'
-    # A clean checkout receives the handoff snapshot once. Editing/publication
-    # then stays local; never replace a team's existing catalog or restore
-    # candidates deliberately removed from an initialized catalog.
+    # Import new bundles even into installations created by an older checkout.
+    # Update only untouched managed files. Local edits and deliberate deletions
+    # are retained; an explicit TRACE_TASK_DIR never receives bundled fixtures.
     with catalog_lock:
-        if not folder.exists():
-            folder.mkdir(parents=True)
-            for source in sorted((ROOT/'tasks/candidates').glob('*.json')):
-                with (folder/source.name).open('xb') as dest:dest.write(source.read_bytes())
+        folder.mkdir(parents=True,exist_ok=True)
+        marker=folder/'.bundled-catalog.json'
+        installed=json.loads(marker.read_text(encoding='utf-8')) if marker.exists() else {}
+        updated=dict(installed)
+        for source in sorted((ROOT/'tasks/candidates').glob('*.json')):
+            raw=source.read_bytes();sha=hashlib.sha256(raw).hexdigest()
+            previous=installed.get(source.name)
+            if previous==sha:continue
+            dest=folder/source.name
+            if (not dest.exists() and previous is None) or (dest.exists() and previous and hashlib.sha256(dest.read_bytes()).hexdigest()==previous):
+                temp=dest.with_suffix('.tmp');temp.write_bytes(raw);temp.replace(dest)
+            updated[source.name]=sha
+        if updated!=installed or not marker.exists():
+            temp=marker.with_suffix('.tmp');temp.write_text(json.dumps(updated,sort_keys=True),encoding='utf-8');temp.replace(marker)
     return folder
 
 
@@ -46,7 +57,7 @@ def load(cid):
 def listing(include_disabled=False):
     result=[]
     for file in sorted(directory().glob('*.json')):
-        if file.stem=='validation':continue
+        if file.stem=='validation' or file.name.startswith('.'):continue
         try:c=load(file.stem)
         except (ValueError,OSError):
             if include_disabled:result.append({'id':file.stem,'title':'과제 파일 형식 확인 필요','description':'필수 필드·JSON 형식을 확인한 뒤 다시 불러오세요.',

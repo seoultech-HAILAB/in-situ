@@ -1,0 +1,60 @@
+{
+  "prompt_version": "executed-code-korean-prose-v3",
+  "model": "gpt-6-luna",
+  "generated_at": "2026-11-02T10:33:31.907936+00:00",
+  "steps": [
+    {
+      "step_no": 1,
+      "title": "입지 정보 분리",
+      "text": "입력 표와 환율 표를 각각 복사합니다. `Location`을 첫 쉼표에서 나누고 양쪽 공백을 제거해 `City`와 `Country`를 만들며, `Potential Store Location`은 문자열로 바꿔 `Zip Code`에 넣습니다."
+    },
+    {
+      "step_no": 2,
+      "title": "금액 정제와 후보 필터링",
+      "text": "`Store Cost`와 `Store Potential Sales`에서 대문자 3자리 통화 코드를 추출하고, 첫 숫자 묶음을 숫자로 변환합니다. 판매액 통화 코드를 우선 사용하고 없으면 비용 통화 코드를 사용한 뒤, 통화·비용·판매액이 모두 있는 행 중 지정된 네 도시·국가 조합에 해당하고 비용이 판매액 이하인 행만 남깁니다."
+    },
+    {
+      "step_no": 3,
+      "title": "우편번호별 후보와 환율 연결",
+      "text": "각 `Zip Code`에서 처음 나타난 행만 남긴 뒤, 남은 행을 우편번호별 최고 판매액과 비교해 일치하는 행을 유지합니다. 환율 표의 `Value in USD`에서 문자열 끝의 0과 그 뒤의 소수점을 차례로 제거하고, 통화 코드 기준으로 왼쪽 연결합니다."
+    },
+    {
+      "step_no": 4,
+      "title": "출력 형식과 정렬",
+      "text": "비용과 판매액을 정수형을 거쳐 문자열로 바꾼 뒤, 지정된 7개 열만 정해진 순서로 선택합니다. 도시·국가·우편번호 오름차순으로 정렬하고 인덱스를 다시 매긴 다음, 비용·판매액·달러 환산값을 숫자로 변환하며 변환할 수 없는 값은 결측값으로 처리합니다."
+    }
+  ],
+  "columns": [
+    {
+      "step_no": 1,
+      "operation_no": 3,
+      "column": "0",
+      "text": "첫 쉼표를 기준으로 Location 분할"
+    },
+    {
+      "step_no": 1,
+      "operation_no": 3,
+      "column": "1",
+      "text": "첫 쉼표 뒤의 Location 분할값"
+    },
+    {
+      "step_no": 1,
+      "operation_no": 4,
+      "column": "City",
+      "text": "분할값의 앞뒤 공백 제거"
+    },
+    {
+      "step_no": 1,
+      "operation_no": 5,
+      "column": "Country",
+      "text": "분할값의 앞뒤 공백 제거"
+    },
+    {
+      "step_no": 1,
+      "operation_no": 6,
+      "column": "Zip Code",
+      "text": "Potential Store Location을 문자열로 변환"
+    }
+  ],
+  "observation_sha256": "cc41156313bf4798e9e661e135ddbd95485c27eb591a416421fbbbbe465fbcf7"
+}

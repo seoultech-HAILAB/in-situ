@@ -65,9 +65,64 @@
   ],
   "explanations": [
     {
+      "task_id": "PILOT4-T01",
+      "file": "explanations/cc41156313bf4798e9e661e135ddbd95485c27eb591a416421fbbbbe465fbcf7.json",
+      "sha256": "06ad25a74894ec938aa2ebdfc2d205378062792cad035f795f1703ff32fdf9b2"
+    },
+    {
+      "task_id": "PILOT4-T02",
+      "file": "explanations/930abc924f09f6cff37348b07fb3c01f9aec33903a6558739cdd0b2a0b3414ad.json",
+      "sha256": "1cca5b3299e4e6bee9cef9d0e63d4bd6c3e9b9501ca23b0394eb3e2d0a64d49a"
+    },
+    {
+      "task_id": "PILOT4-T03",
+      "file": "explanations/2d77bce8a2e8b9ee32cc55c3843961bac6aa02ac945feff1ef27c90ca7b8097e.json",
+      "sha256": "4476220c0972dee7e64ecbe6fd8ffd115fd5472c52b9253ae1645edfdb8d40db"
+    },
+    {
+      "task_id": "PILOT4-T04",
+      "file": "explanations/1ea4380b45508b7d98e591a79f95020b69d57f888222c771b15cf2fb78fb8558.json",
+      "sha256": "ac4087b545571fa84b545d93ca69899bfb7d79829170f73824e8794be6ede2b1"
+    },
+    {
+      "task_id": "PILOT4-T05",
+      "file": "explanations/1d46729ff2b36b2b36c8dabd6e4b83fa71063fb634dc5f80017a17c582ce291f.json",
+      "sha256": "47b138eb62955fcbc004663f1794fb6f2fac4370b7d168df612d619c8a42f788"
+    },
+    {
+      "task_id": "PILOT4-T06",
+      "file": "explanations/5e000338d47a5d4894e28209d927d51b9b17fe3d2f22d578b10c4f45ab65f688.json",
+      "sha256": "2c0ba47e883b89cf0e6149273d1126b7f06501e7778ca1e9da6c8a73ec727c26"
+    },
+    {
+      "task_id": "PILOT4-T07",
+      "file": "explanations/5e90956c4a962d22886cd679741d8df621ef4582ccbfceea22a4d44854fa3bfe.json",
+      "sha256": "86825122b1b2acd78f4e15b955c52a5da040c881e6f53e9d400284a8522a70b7"
+    },
+    {
+      "task_id": "PILOT4-T08",
+      "file": "explanations/3881478624e1c3e6791633b8d63c2aa41903e0d2484da2732093b2ba60f13a82.json",
+      "sha256": "a7de80b0d6fd82408429829ad7bca08539a863ee8b133799305b796374ecea69"
+    },
+    {
+      "task_id": "PILOT4-T09",
+      "file": "explanations/d94ea241d9dc2e18d9410e1f7e2a9cffef7ed33b3e085a046a5c063fe30e3e6a.json",
+      "sha256": "6a54480f9648f045ae5e1378da5e7bc561f06f7d58a8bae0f58849020ee5788f"
+    },
+    {
+      "task_id": "PILOT4-T10",
+      "file": "explanations/6231b7ff151b909bf843c2ef211c58214b94dc70bfe7129e7ac8cb057b7a9418.json",
+      "sha256": "75cf641e1ea9f5da7935c90ed0c031c65390343e7a63d9865e94d421967c9fd8"
+    },
+    {
+      "task_id": "PILOT4-TRAIN",
+      "file": "explanations/55096e1a9b1de6aab21f01aae699cd8a5111486d05c4f402d9e660b99f5cab86.json",
+      "sha256": "5b9021f12b64274f5d6a45bd16c1fd9c13cdae656e153da46867833255074290"
+    },
+    {
       "task_id": "VERIFY2-M4-A",
-      "file": "explanations/20a71fb5ca138a60d562ede7b571a6cdec488341e34779135e15675269423898.json",
-      "sha256": "69d249d3e903605faf55cb69d835be403bbd05b5fb1d1c81c0f9da1306bff693"
+      "file": "explanations/1cee87045d0f16b9e49f15b2632c11fda76e7f79335e4a2cc738622b825936b8.json",
+      "sha256": "9ce1efa23a82818c4dc7dec2a9264fde9a81204cbbc239ed988d2a18dbca69c5"
     }
   ]
 }

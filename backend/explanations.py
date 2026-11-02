@@ -105,7 +105,13 @@ def fingerprint(run):
 
 def observation_fingerprint(run):
     """Portable replay key: the exact executed code, boundaries and table values."""
-    data={'prompt':PROMPT_VERSION,'observed':context(run),'column_targets':column_targets(run)}
+    observed=context(run)
+    # Library-version-specific dtype spellings (object/str, for example) must
+    # not require a new API call for identical code and actual table contents.
+    for step in observed['steps']:
+        for table in [step['output'],*[item['table'] for item in step['inputs']]]:
+            if table:table.pop('stats',None)
+    data={'prompt':PROMPT_VERSION,'observed':observed,'column_targets':column_targets(run)}
     return hashlib.sha256(json.dumps(data,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
 
 

@@ -1,0 +1,60 @@
+{
+  "prompt_version": "executed-code-korean-prose-v3",
+  "model": "gpt-6-luna",
+  "generated_at": "2026-11-02T14:17:05.277106+00:00",
+  "steps": [
+    {
+      "step_no": 1,
+      "title": "지역명 표기 통일",
+      "text": "`Location`의 앞뒤 공백을 제거하고 소문자로 바꾼 뒤, 숫자 `0`은 `o`로, `3`은 `e`로 치환합니다. 이어 `londen`은 `london`으로, `liverpoo`는 `liverpool`로 바꾸고 각 단어의 첫 글자를 대문자로 표시합니다."
+    },
+    {
+      "step_no": 2,
+      "title": "측정값을 품목별 열로 재구성",
+      "text": "같은 `Location`, `Nut Type`, `Category` 조합이 여러 개면 첫 행만 남깁니다. 각 지역과 품목 조합을 기준으로 `Category`에 해당하는 `Value`를 별도 열로 붙이며, 연결되지 않는 값은 비워 둡니다."
+    },
+    {
+      "step_no": 3,
+      "title": "수치 변환 및 매출 계산",
+      "text": "가격과 수량 열을 수치로 변환한 뒤, 두 값을 곱해 품목별 `Revenue`를 계산합니다."
+    },
+    {
+      "step_no": 4,
+      "title": "지역별 매출·평균 가격 집계",
+      "text": "`Location`별로 `Revenue`를 합산하고 `Price (£) per pack`의 평균을 구합니다. 평균 가격은 소수 둘째 자리로 반올림하고, 지역명 오름차순으로 정렬한 뒤 두 집계값을 문자열 형식으로 표시합니다. 출력 열을 지정한 순서로 구성해 파일 표로 등록하고, 이어 `Revenue`와 평균 가격을 숫자로 다시 변환합니다."
+    }
+  ],
+  "columns": [
+    {
+      "step_no": 1,
+      "operation_no": 2,
+      "column": "Location",
+      "text": "앞뒤 공백 제거, 소문자화, 지정 문자와 지역명 치환"
+    },
+    {
+      "step_no": 1,
+      "operation_no": 3,
+      "column": "Location",
+      "text": "각 단어의 첫 글자를 대문자로 변환"
+    },
+    {
+      "step_no": 3,
+      "operation_no": 1,
+      "column": "Price (£) per pack",
+      "text": "수치로 변환"
+    },
+    {
+      "step_no": 3,
+      "operation_no": 2,
+      "column": "Quant per Q",
+      "text": "수치로 변환"
+    },
+    {
+      "step_no": 3,
+      "operation_no": 3,
+      "column": "Revenue",
+      "text": "가격과 수량을 곱해 계산"
+    }
+  ],
+  "observation_sha256": "2d77bce8a2e8b9ee32cc55c3843961bac6aa02ac945feff1ef27c90ca7b8097e"
+}
