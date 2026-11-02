@@ -1,6 +1,6 @@
 {
   "purpose": "development-handoff",
-  "count": 11,
+  "count": 12,
   "candidates": [
     {
       "id": "PILOT4-T01",
@@ -56,6 +56,18 @@
       "id": "PILOT4-TRAIN",
       "file": "candidates/PILOT4-TRAIN.json",
       "sha256": "26ac46151bdd9815a8bdd37b0f5a8a0e565e24794eb09b523404865bd4f472a2"
+    },
+    {
+      "id": "VERIFY2-M4-A",
+      "file": "candidates/VERIFY2-M4-A.json",
+      "sha256": "15f443913e69e28a9661b3dcccd7a75b2a85ee2efde955aa68f1730fc7832ac3"
+    }
+  ],
+  "explanations": [
+    {
+      "task_id": "VERIFY2-M4-A",
+      "file": "explanations/20a71fb5ca138a60d562ede7b571a6cdec488341e34779135e15675269423898.json",
+      "sha256": "69d249d3e903605faf55cb69d835be403bbd05b5fb1d1c81c0f9da1306bff693"
     }
   ]
 }

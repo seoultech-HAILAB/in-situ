@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def test_bundled_catalog_is_self_contained_and_copied_once(tmp_path,monkeypatch):
     manifest=json.loads((ROOT/'tasks/manifest.json').read_text(encoding='utf-8'))
-    assert manifest['count']==11
+    assert manifest['count']==12
     bundle=tmp_path/'tasks/candidates'
     bundle.mkdir(parents=True)
     for item in manifest['candidates']:
@@ -27,7 +27,7 @@ def test_bundled_catalog_is_self_contained_and_copied_once(tmp_path,monkeypatch)
     monkeypatch.setattr(candidates,'ROOT',tmp_path)
     monkeypatch.delenv('TRACE_TASK_DIR',raising=False)
     local=candidates.directory()
-    assert len(candidates.listing())==11
+    assert len(candidates.listing())==12
     first=local/(manifest['candidates'][0]['id']+'.json')
     edited=json.loads(first.read_text(encoding='utf-8-sig'))
     edited['title']='Local edit'

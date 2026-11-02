@@ -103,6 +103,12 @@ def fingerprint(run):
     return hashlib.sha256(json.dumps(data,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
 
 
+def observation_fingerprint(run):
+    """Portable replay key: the exact executed code, boundaries and table values."""
+    data={'prompt':PROMPT_VERSION,'observed':context(run),'column_targets':column_targets(run)}
+    return hashlib.sha256(json.dumps(data,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+
+
 def model_context(run):
     # Deliberate egress boundary: code and Step correspondence only. Tables,
     # Target, requirements, evaluator annotations and lineage never leave here.
@@ -164,6 +170,14 @@ def obtain(run):
             if saved.get('fingerprint')==key:
                 validate_steps(saved,len(run['stages'])-1,run)
                 return saved,True
+        observed=observation_fingerprint(run)
+        bundled=Path(__file__).resolve().parents[1]/'tasks/explanations'/(observed+'.json')
+        if bundled.exists():
+            saved=json.loads(bundled.read_text(encoding='utf-8'))
+            if saved.get('observation_sha256')!=observed or saved.get('prompt_version')!=PROMPT_VERSION:
+                raise ValueError('동봉된 설명과 실제 실행 스냅샷이 다릅니다.')
+            validate_steps(saved,len(run['stages'])-1,run)
+            return {**saved,'fingerprint':key,'bundled_replay':True},True
         result=generate(run)
         file.parent.mkdir(parents=True,exist_ok=True)
         temp=file.with_suffix('.tmp');temp.write_text(json.dumps(result,ensure_ascii=False),encoding='utf-8');temp.replace(file)
