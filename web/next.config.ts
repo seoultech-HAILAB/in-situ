@@ -10,7 +10,6 @@ export default function config(phase: string): NextConfig {
     // Those modules must resolve this app's React, not the legacy app's copy.
     turbopack: {
       root: path.join(__dirname, ".."),
-      rules: { "*.css": { loaders: ["@tailwindcss/turbopack"], as: "*.css" } },
       resolveAlias: {
         react: "./node_modules/react",
         "react/jsx-runtime": "./node_modules/react/jsx-runtime.js",

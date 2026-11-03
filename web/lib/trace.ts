@@ -5,7 +5,7 @@ export { selectedCells, pointKey, combineSelection } from "../../src/tableSelect
 export { reviewGroups, groupColor, groupBorder } from "../../src/reviewGroups";
 export { reviewRun, workflowInputs, referencedOutputs, buildWorkflowGraph, ownerOf } from "../../src/workflowGraph";
 export { useTableDrag } from "../../src/useTableDrag";
-export { PythonCode } from "../../src/PythonCode";
+export { PythonCode } from "../components/trace/python-code";
 
 import type { CellValue, Run, Session, Stage, Table } from "../../src/types";
 
@@ -43,7 +43,7 @@ async function readError(res: Response) {
 
 // Same contract as the legacy client: session responses whose explanations are
 // missing trigger one explanation request so both conditions see identical text.
-export async function api<T>(path: string, body?: unknown): Promise<T> {
+export async function api<T>(path: string, body?: unknown, options = { explain: true }): Promise<T> {
   const headers = {
     "Content-Type": "application/json",
     "X-Trace-View": researchView() ? "researcher" : "participant",
@@ -56,7 +56,7 @@ export async function api<T>(path: string, body?: unknown): Promise<T> {
   let data = await res.json();
   const isSession =
     data?.run && Array.isArray(data.runs) && ["ex", "in-situ"].includes(data.condition);
-  if (!path.endsWith("/explanations") && isSession && !explanationsReady(data.run)) {
+  if (options.explain && !path.endsWith("/explanations") && isSession && !explanationsReady(data.run)) {
     try {
       const described = await fetch(`/api/sessions/${data.id}/explanations`, {
         method: "POST",

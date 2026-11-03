@@ -11,7 +11,7 @@ const pretendard = localFont({
   display: "swap",
 });
 
-export const metadata: Metadata = { title: "TRACE" };
+export const metadata: Metadata = { title: "in-situ" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

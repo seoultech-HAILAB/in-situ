@@ -43,7 +43,17 @@ import { ColumnOriginDetails } from "./column-origin";
 import { DataTable } from "./data-table";
 import { InitialJudgment } from "./initial-judgment";
 import { ScopeSelect, type Scope } from "./scope-select";
-import type { Comment } from "./trace-app";
+
+type Comment = {
+  target: ReviewTarget;
+  anchor: HTMLElement;
+  baseRunId: string;
+  title: string;
+  preview: string;
+  scope: Scope;
+  error: string;
+  editing: boolean;
+};
 
 const title = (s: Stage) => s.nl_explanation?.title || stepTitle(s);
 
