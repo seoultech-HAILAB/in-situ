@@ -1024,6 +1024,14 @@ def legacy_index():
     return FileResponse(ROOT / 'dist' / 'index.html')
 
 
+@app.get('/in-situ')
+def in_situ_index():
+    file = WEB / 'in-situ.html'
+    if not file.exists():
+        raise HTTPException(503, 'web/에서 npm run build 후 서버를 시작하세요.')
+    return FileResponse(file)
+
+
 @app.get('/')
 def index():
     if (WEB / 'index.html').exists():

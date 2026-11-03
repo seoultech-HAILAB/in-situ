@@ -6,14 +6,14 @@ import { Button } from "@/components/ui/button";
 import { api as traceApi, PythonCode, taskLabel, type Health, type Session, type TaskInput, type TaskSummary } from "@/lib/trace";
 import { WorkspaceTable } from "./workspace-table";
 
-const SESSION_KEY = "trace-woz-session";
-const api = <T,>(path: string, body?: unknown) => traceApi<T>(path, body, { explain: false });
 type Scope = "step" | "pipeline";
 type Message = { id: string; request: string; response: string; failed?: boolean };
 type PanelSizes = { code: number; chat: number; top: number };
 const DEFAULT_SIZES: PanelSizes = { code: 50, chat: 25, top: 73 };
 
-export function TraceApp() {
+export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" }) {
+  const sessionKey = condition === "in-situ" ? "trace-in-situ-session" : "trace-woz-session";
+  const api = <T,>(path: string, body?: unknown) => traceApi<T>(path, body, { explain: condition === "in-situ" });
   const [session, setSession] = useState<Session | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
@@ -43,7 +43,7 @@ export function TraceApp() {
   function accept(next: Session) {
     setSession(next);
     setTaskId(next.task_id);
-    localStorage.setItem(SESSION_KEY, next.id);
+    localStorage.setItem(sessionKey, next.id);
     const url = new URL(location.href);
     url.searchParams.set("session", next.id);
     history.replaceState(null, "", url);
@@ -63,14 +63,14 @@ export function TraceApp() {
         setHealth(nextHealth);
         setTasks(nextTasks);
         setTaskId(nextTasks[0]?.id ?? "");
-        const sid = new URLSearchParams(location.search).get("session") || localStorage.getItem(SESSION_KEY);
+        const sid = new URLSearchParams(location.search).get("session") || localStorage.getItem(sessionKey);
         if (!sid) return;
         try {
           const restored = await api<Session>(`/sessions/${encodeURIComponent(sid)}`);
           if (active) accept(restored);
         } catch {
           if (!active) return;
-          localStorage.removeItem(SESSION_KEY);
+          localStorage.removeItem(sessionKey);
           const url = new URL(location.href);
           url.searchParams.delete("session");
           history.replaceState(null, "", url);
@@ -118,7 +118,7 @@ export function TraceApp() {
     void perform("실행 중", async () => {
       const task = await api<TaskInput>(`/woz-tasks/${encodeURIComponent(taskId)}/input`);
       const next = await api<Session>(`/woz-tasks/${encodeURIComponent(taskId)}/start`, {
-        input_csv: task.input_csv, target_csv: task.target_csv, condition: "ex",
+        input_csv: task.input_csv, target_csv: task.target_csv, condition,
       });
       accept(next);
       setStepId("");
@@ -201,6 +201,7 @@ export function TraceApp() {
   return (
     <div className="workspace" ref={root} style={{ "--code-size": `${sizes.code}%`, "--chat-size": `${sizes.chat}%`, "--top-size": `${sizes.top}%` } as CSSProperties}>
       <header className="workspace-toolbar">
+        {condition === "in-situ" && <span className="workspace-mode">In-situ</span>}
         <select aria-label="과제 선택" className="task-select" disabled={booting || !!busy} value={taskId} onChange={(event) => setTaskId(event.target.value)}>
           {!tasks.some((task) => task.id === taskId) && <option value={taskId}>{booting ? "불러오는 중…" : session?.study_task?.title || "과제 선택"}</option>}
           {tasks.map((task) => <option key={task.id} value={task.id}>{taskLabel(task)}</option>)}
@@ -243,7 +244,7 @@ export function TraceApp() {
                 <select className="table-view-select" aria-label="표 선택" disabled={!run} value={tableView} onChange={(event) => setTableView(event.target.value)}>{tables.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
                 {visibleTable && <span className="pane-meta table-shape">{visibleTable.rows.length}행 × {visibleTable.columns.length}열</span>}
               </div>
-              {visibleTable ? <WorkspaceTable data={visibleTable} identity={`${run?.id}:${step?.id}:${tableView}`} /> : <div className="pane-empty" />}
+              {visibleTable ? <WorkspaceTable key={`${run?.id}:${step?.id}:${tableView}`} data={visibleTable} identity={`${run?.id}:${step?.id}:${tableView}`} stage={condition === "in-situ" && tableView === "output" ? step : undefined} /> : <div className="pane-empty" />}
             </section>
           </div>
           {separator("top", "아래 빈 영역 높이 조절")}

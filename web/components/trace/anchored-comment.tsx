@@ -8,8 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScopeSelect, type Scope } from "./scope-select";
 
 /** Keeps a floating panel next to a table element, flipping above when needed. */
-function useAnchoredPosition(anchor: HTMLElement, panel: React.RefObject<HTMLDivElement | null>, hideWhenClipped: boolean) {
-  const [pos, setPos] = useState<{ left: number; top: number; visible: boolean }>({ left: 12, top: 12, visible: false });
+export function useAnchoredPosition(anchor: HTMLElement, panel: React.RefObject<HTMLDivElement | null>, hideWhenClipped: boolean) {
+  const [pos, setPos] = useState({ left: 12, top: 12, visible: false, above: false, arrowLeft: 20 });
   useLayoutEffect(() => {
     let frame = 0;
     const place = () => {
@@ -23,7 +23,7 @@ function useAnchoredPosition(anchor: HTMLElement, panel: React.RefObject<HTMLDiv
       const below = a.bottom + 8;
       const top =
         below + p.height <= innerHeight - 12 ? below : a.top - p.height - 8 >= 12 ? a.top - p.height - 8 : Math.max(12, innerHeight - p.height - 12);
-      setPos({ left, top, visible: !hideWhenClipped || inView });
+      setPos({ left, top, visible: !hideWhenClipped || inView, above: top < a.top, arrowLeft: Math.max(18, Math.min(p.width - 18, a.left + a.width / 2 - left)) });
     };
     const schedule = () => {
       cancelAnimationFrame(frame);
@@ -31,6 +31,9 @@ function useAnchoredPosition(anchor: HTMLElement, panel: React.RefObject<HTMLDiv
     };
     const observer = new ResizeObserver(schedule);
     if (panel.current) observer.observe(panel.current);
+    observer.observe(anchor);
+    const viewport = anchor.closest('[role="region"]');
+    if (viewport) observer.observe(viewport);
     place();
     addEventListener("resize", schedule);
     addEventListener("scroll", schedule, true);
@@ -44,7 +47,7 @@ function useAnchoredPosition(anchor: HTMLElement, panel: React.RefObject<HTMLDiv
   return pos;
 }
 
-function useDismiss(anchor: HTMLElement, panel: React.RefObject<HTMLDivElement | null>, onDismiss: () => void, locked: boolean) {
+export function useDismiss(anchor: HTMLElement, panel: React.RefObject<HTMLDivElement | null>, onDismiss: () => void, locked: boolean) {
   useLayoutEffect(() => {
     const outside = (e: PointerEvent) => {
       if (locked || !(e.target instanceof Node)) return;
