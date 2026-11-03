@@ -19,3 +19,4 @@ __pycache__/
 !/evidence/TEAM_SETUP.md
 *.pdf
 *.zip
+.DS_Store
