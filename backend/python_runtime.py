@@ -19,7 +19,8 @@ import pandas as pd
 
 from .runtime import Frame, Interpreter, Unsupported, clean, digest, run as traced_run, table
 from .python_provenance import ProvenanceInterpreter
-from .statement_observations import Observations, snapshot as observation_snapshot, VERSION as OBSERVATIONS_VERSION
+from .statement_observations import Observations, SchemaObservations, snapshot as observation_snapshot, VERSION as OBSERVATIONS_VERSION
+from .table_call_observations import TableCallObservations, VERSION as TABLE_CALLS_VERSION
 
 MODULES=('pandas','numpy','math','re','datetime','statistics','collections','itertools','functools')
 # datetime's native strftime/strptime call __import__ for these trusted helpers.
@@ -138,13 +139,14 @@ def run(code,frame,sources,plan):
             for x in helper_names.get(name,set()):
                 if x not in loaded:loaded.add(x);todo.append(x)
         names=[k for k in before if k in loaded or k.startswith('tables:') and 'tables' in loaded]
-        # Definitions/scalar setup have an explicit unchanged table observation.
         reference_names=list(names)
-        if not names:names=[next(reversed(before))]
         inputs=[{'ref':owners.get(k,'input'),'variable':k,'table':checked(before[k],identities[k])} for k in names]
         previous={k:v.copy(deep=True) for k,v in before.items()}
         observations=Observations(code,spec,identities)
         statement_snapshots=[]
+        executed_statements=[]
+        schemas=SchemaObservations(list(zip(indices,nodes)))
+        table_calls=TableCallObservations(code,spec['id'])
         observation_bytes=0;complete_observations=True
         try:
             output=io.StringIO()
@@ -159,12 +161,21 @@ def run(code,frame,sources,plan):
                     executed_lines=set()
                     old_trace=sys.gettrace()
                     def record_line(frame,event,arg):
-                        if event=='line' and frame.f_code.co_filename=='<trace-program>':executed_lines.add(frame.f_lineno)
+                        try:table_calls.observe(frame,event,arg,statement_index)
+                        except Exception:table_calls.limited=True
+                        if frame.f_code.co_filename=='<trace-program>':
+                            if event=='line':executed_lines.add(frame.f_lineno)
+                            try:schemas.trace(frame,event)
+                            except Exception:pass
                         return record_line
                     try:
-                        if complete_observations:sys.settrace(record_line)
+                        sys.settrace(record_line)
                         exec(compile(ast.Module(body=[node],type_ignores=[]),'<trace-program>','exec'),env,env)
                     finally:sys.settrace(old_trace)
+                    # Independent of snapshot/replay support and memory limits.
+                    executed_statements.append({'statement_index':statement_index,
+                        'code_location':{'start':node.lineno,'end':node.end_lineno,'start_column':node.col_offset,'end_column':node.end_col_offset},
+                        'executed_lines':sorted(executed_lines)})
                     if complete_observations:
                         try:
                             observed_after=observation_snapshot(env,observed_names)
@@ -179,8 +190,13 @@ def run(code,frame,sources,plan):
             if name not in after:
                 changed=[k for k,v in after.items() if k not in previous or not same(v,previous[k])]
                 observation_only=not changed
-                name=changed[-1] if changed else names[-1]
+                name=changed[-1] if changed else names[-1] if names else 'input_df'
             actual=after[name]
+            constructed_input=not inputs and not observation_only
+            if not inputs:
+                inputs=[{'ref':owners.get(name,'input') if observation_only else 'constructed',
+                         'variable':name if observation_only else None,
+                         'table':checked(before[name],identities[name]) if observation_only else checked(pd.DataFrame(),[])}]
             ids=['p'+digest([spec['id'],clean(ix),j]) for j,ix in enumerate(actual.index)]
             observed=checked(actual,ids)
             detailed=None;trace_error=None
@@ -235,6 +251,14 @@ def run(code,frame,sources,plan):
                 written={n.id for node in nodes for n in ast.walk(node) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Store)}
                 for key in written:tracer.env.pop(key,None)
             last['stdout']=output.getvalue()[:10000]
+            last['executed_statements']=executed_statements
+            last['direct_table_calls']=table_calls.records
+            last['direct_table_observations_version']=TABLE_CALLS_VERSION
+            if table_calls.limited:last['direct_table_observations_limited']=True
+            last['statement_schema_effects']=list(schemas.records.values())
+            last['schema_origins']=schemas.for_frame(actual)
+            last['output_bindings']=[key for key,value in after.items() if value is actual]
+            last['comparison_input_kind']='constructed' if constructed_input else 'observed'
             try:
                 for observation in statement_snapshots:observations.observe(*observation)
                 observations.finish(last,name,inputs,complete_observations)

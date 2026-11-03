@@ -37,10 +37,12 @@ function changeHeadings(item: ExplanationItem): { names: string[]; kind?: Change
   return [{ names: item.output_columns.length ? item.output_columns : ["열 대응 미확인"] }];
 }
 
-export function ExSituExplanation({ step, number, label, inputView = false }: {
-  step?: Stage; number: number; label?: string; inputView?: boolean;
+export function ExSituExplanation({ step, number, label, inputView = false, filterStep }: {
+  step?: Stage; number: number; label?: string; inputView?: boolean; filterStep?: Stage;
 }) {
-  const items = step ? availableTransformations(step) : [];
+  const allItems = step ? availableTransformations(step) : [];
+  const filter = filterStep?.transformations?.[0];
+  const items = filter ? [filter, ...allItems.filter(item => item.id !== filter.id)] : allItems;
   return <section className="explanation-pane" aria-label="코드 자연어 설명">
     <div className="pane-toolbar"><span>코드 설명</span>
       {(step || inputView) && <span className="explanation-step-label">{label ?? `Step ${String(number).padStart(2,"0")}`}</span>}
@@ -53,7 +55,7 @@ export function ExSituExplanation({ step, number, label, inputView = false }: {
             className={`explanation-change-group${heading.kind ? ` change-${heading.kind}` : ""}`} data-change-kind={heading.kind}>
             <span className="explanation-change-columns">{heading.names.join(", ")}</span>
             {heading.kind && <span className="explanation-change-type">{CHANGE_NAMES[heading.kind]}</span>}
-          </span>)}</h3>
+          </span>)}{item.id === filter?.id && <span className="step-filter-count">{filterStep!.input!.rows.length} → {filterStep!.table.rows.length}행</span>}</h3>
           <TransformationDetails item={transformationDetails(item)} plainCode />
         </li>)}</ol> : <p className="explanation-empty">{step.nl_explanation?.text ?? "설명이 없습니다."}</p>}
       </>}

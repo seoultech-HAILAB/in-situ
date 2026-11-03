@@ -5,6 +5,7 @@ import platform
 import threading
 import time
 import uuid
+import sys
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,7 @@ from .review_context import resolve_review_target
 from .review_presentation import present_run
 from . import prototype
 from . import judgments
+from . import experiment
 from .conditions import normalize as normalize_condition, VARIANTS as CONDITION_VARIANTS
 from .generator import (DEMO_INPUT, DEMO_REQUIREMENTS, DEMO_TARGET,
                         OpenAIGenerator, demo_code, revise_demo, DEFAULT_MODEL,
@@ -80,6 +82,7 @@ def read(sid):
     if not p.exists():
         raise HTTPException(404, '세션을 찾을 수 없습니다.')
     s = json.loads(p.read_text(encoding='utf-8'))
+    experiment.authorize_session(sys.modules[__name__], s)
     who=request_identity.get()
     if who and who['role']=='participant' and s.get('participant_id')!=who['participant_id']:
         raise HTTPException(404,'세션을 찾을 수 없습니다.')
@@ -133,6 +136,9 @@ def event(s, name, data=None):
                         'condition_variant': condition_variant(s['condition'],s.get('study_mode')),
                         'code_version': r['code_version'] if r else None,
                         'execution_version': r['id'] if r else None, 'data': data or {}})
+    if s.get('experiment_id'):
+        experiment.record(sys.modules[__name__],experiment.load(sys.modules[__name__],s['experiment_id']),
+                          'backend.event',s['events'][-1])
 
 
 def review_duration(s):
@@ -999,6 +1005,9 @@ def discard_pilot(body: DiscardPilot):
     return {'ok':True,'discarded':list(items),'recovery_batch':batch}
 
 
+experiment.register(sys.modules[__name__])
+
+
 @app.middleware('http')
 async def local_guard(request: Request, call_next):
     denied = await gate(request)
@@ -1018,13 +1027,55 @@ async def local_guard(request: Request, call_next):
     if length > 25_000_000:
         return Response('요청 크기가 너무 큽니다.', status_code=413)
     identity_token=request_identity.set(request.state.access_identity)
+    study_auth={'id':request.headers.get('x-study-id'), 'token':request.headers.get('x-study-token')}
+    study_token=experiment.credentials.set(study_auth)
+    study_state=None
+    study_verified=False
+    request_started=time.perf_counter()
     try:
+        if study_auth['id']:
+            study_state=experiment.load(sys.modules[__name__],study_auth['id'])
+            experiment.verify(study_state,study_auth['token'])
+            study_verified=True
+        route=request.url.path
+        if route.startswith('/api/sessions/'):
+            sid=route.split('/')[3]
+            session=read(sid)
+            if study_auth['id'] and session.get('experiment_id')!=study_auth['id']:
+                raise HTTPException(403,'이 실험의 세션이 아닙니다.')
+            if session.get('experiment_id') and route.endswith(('/condition','/research-code','/generate','/confirm')):
+                raise HTTPException(403,'실험의 과제와 조건은 고정되어 있습니다.')
+            experiment.authorize_session(sys.modules[__name__],session,
+                mutate=request.method=='POST' and not route.endswith('/events'),
+                allow_preparing=route.endswith(('/explanations','/execution-observations')))
         response = await call_next(request)
+        if study_state and route.startswith('/api/sessions/') and request.method=='POST' and not route.endswith('/events') and response.status_code < 400:
+            with lock(sid):
+                experiment.snapshot(sys.modules[__name__],read(sid),route)
+        if study_state and route.startswith('/api/') and not route.endswith('/events'):
+            experiment.record(sys.modules[__name__],study_state,'http.completed',{
+                'method':request.method,'path':route,'status':response.status_code,
+                'duration_ms':round((time.perf_counter()-request_started)*1000,2),
+                'request_id':request.headers.get('x-request-id')})
+    except HTTPException as exc:
+        if study_verified:
+            experiment.record(sys.modules[__name__],study_state,'http.failed',{
+                'method':request.method,'path':request.url.path,'status':exc.status_code,
+                'duration_ms':round((time.perf_counter()-request_started)*1000,2),'message':str(exc.detail)[:2000]})
+        from fastapi.responses import JSONResponse
+        response=JSONResponse({'detail':exc.detail},status_code=exc.status_code)
+    except Exception as exc:
+        if study_verified:
+            experiment.record(sys.modules[__name__],study_state,'http.failed',{
+                'method':request.method,'path':request.url.path,'status':500,
+                'duration_ms':round((time.perf_counter()-request_started)*1000,2),'error_type':type(exc).__name__})
+        raise
     finally:
+        experiment.credentials.reset(study_token)
         request_identity.reset(identity_token)
     if (request.state.access_role=='participant' or request.headers.get('x-trace-view')=='participant') and response.headers.get('content-type','').startswith('application/json'):
-        chunks=[chunk async for chunk in response.body_iterator]
-        data=json.loads(b''.join(chunks))
+        raw=b''.join([chunk async for chunk in response.body_iterator]) if hasattr(response,'body_iterator') else response.body
+        data=json.loads(raw)
         headers={k:v for k,v in response.headers.items() if k.lower()!='content-length'}
         response=Response(json.dumps(participant_view(data),ensure_ascii=False),status_code=response.status_code,headers=headers,media_type='application/json')
     response.headers['X-Content-Type-Options'] = 'nosniff'

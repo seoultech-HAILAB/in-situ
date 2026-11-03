@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { logStudy, studyContext, newEventId, studyHeaders } from "@/lib/study-telemetry";
 import { ArrowUp, Check, ChevronLeft, ChevronRight, Download, LoaderCircle, Play, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api as traceApi, PythonCode, sourceSnippet, taskLabel, type Health, type Session, type TaskInput, type TaskSummary } from "@/lib/trace";
@@ -8,6 +9,7 @@ import { WorkspaceTable } from "./workspace-table";
 import { ExSituExplanation } from "./ex-situ-explanation";
 import { DirectUsedTables } from "./direct-used-tables";
 import { workspaceSteps } from "./revision-workspace";
+import { t07StepFilter } from "./t07-step-filter";
 
 type Message = { id: string; request: string; response: string; failed?: boolean };
 type PanelSizes = { code: number; chat: number; top: number };
@@ -19,7 +21,7 @@ const STEP_HEADER_TONES = [
   { background: "#f2eef8", selected: "#e5dcf1" },
 ];
 
-export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" }) {
+export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in-situ"; managed?: { initialSession: Session; toolbar: ReactNode } }) {
   const sessionKey = condition === "in-situ" ? "trace-in-situ-session" : "trace-woz-session";
   const panelKey = `workspace-panels:${condition}`;
   const api = <T,>(path: string, body?: unknown) => traceApi<T>(path, body, { explain: true });
@@ -59,11 +61,13 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   const viewIndex = views.findIndex(view => view.viewId === selectedViewId);
   const observedVersion = step?.execution_version ?? run?.id;
   const originalStep = run?.stages.find(stage => stage.id === step?.id);
+  const localFilter = useMemo(() => selectedInput || viewingOutput ? undefined : t07StepFilter(session?.task_id, step), [session?.task_id, step, selectedInput, viewingOutput]);
   const taskChanged = !!session && taskId !== session.task_id;
 
   function accept(next: Session) {
     setSession(next);
     setTaskId(next.task_id);
+    if (managed) return;
     localStorage.setItem(sessionKey, next.id);
     const url = new URL(location.href);
     url.searchParams.set("session", next.id);
@@ -78,6 +82,12 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
         setSizes({ code: Math.min(75, Math.max(25, stored.code)), chat: Math.min(45, Math.max(20, stored.chat)), top: Math.min(85, Math.max(40, stored.top)) });
       }
     } catch { /* Ignore malformed local preferences. */ }
+    if (managed) {
+      accept(managed.initialSession);
+      void api<Health>("/health").then(setHealth).catch(e => setError(e.message)).finally(() => setBooting(false));
+      logStudy("workspace.ready", { session_id: managed.initialSession.id });
+      return () => { active = false; };
+    }
     void Promise.all([api<Health>("/health"), api<TaskSummary[]>("/woz-tasks")])
       .then(async ([nextHealth, nextTasks]) => {
         if (!active) return;
@@ -127,29 +137,40 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   }, [selectedViewId, observedVersion]);
   useEffect(() => { setTableView(selectedInput?.tableView ?? "output"); }, [observedVersion]);
   useEffect(() => { chatEnd.current?.scrollIntoView({ block: "nearest" }); }, [pending, failures, run?.id, preview?.id, preview?.status]);
+  useEffect(() => {
+    if (!managed || !session) return;
+    const current = { session_id: session.id, run_id: run?.id, code_version: run?.code_version,
+      step_id: step?.id, view_id: selectedViewId, table_view: tableView, candidate_id: preview?.id,
+      viewing_candidate: !!step?.isCandidate, code_location: step?.code_location };
+    studyContext(current);
+    logStudy("view.context", current);
+  }, [session?.id, run?.id, selectedViewId, tableView, preview?.id]);
 
   // Follow ancestry so undo and forks show only the current execution's history.
   const messages = useMemo(() => {
     const history: Message[] = [];
+    const reviewedRuns = new Set(session?.revision_history?.map(item => item.run_id));
     const runs = new Map(session?.runs.map((item) => [item.id, item]));
     let current = run;
     const seen = new Set<string>();
     while (current && !seen.has(current.id)) {
       seen.add(current.id);
       const text = (current as typeof current & { revision_request?: string }).revision_request;
-      if (text) history.unshift({ id: current.id, request: text, response: `수정 후 다시 실행했습니다. · v${current.code_version}` });
+      if (text && !reviewedRuns.has(current.id)) history.unshift({ id: current.id, request: text, response: `수정 후 다시 실행했습니다. · v${current.code_version}` });
       current = current.parent_run_id ? runs.get(current.parent_run_id) : undefined;
     }
     return history;
-  }, [session?.runs, run]);
+  }, [session?.runs, session?.revision_history, run]);
 
   async function perform(label: string, work: () => Promise<void>) {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(label);
     setError("");
-    try { await work(); }
-    catch (e) { setError((e as Error).message); }
+    const started = performance.now();
+    logStudy("workspace.action_started", { action: label });
+    try { await work(); logStudy("workspace.action_completed", { action: label, duration_ms: performance.now() - started }); }
+    catch (e) { setError((e as Error).message); logStudy("workspace.action_failed", { action: label, message: (e as Error).message, duration_ms: performance.now() - started }); }
     finally { inFlight.current = false; setBusy(""); }
   }
 
@@ -172,7 +193,8 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   function revise() {
     const text = request.trim();
     if (!session || !run || !step || selectedInput || preview || !text || !health?.api_configured || inFlight.current || taskChanged) return;
-    const submitted: Message = { id: crypto.randomUUID(), request: text, response: "" };
+    const submitted: Message = { id: newEventId(), request: text, response: "" };
+    logStudy("revision.submitted", { request: text, step_id: step.id, run_id: run.id });
     void perform("수정하고 실행하는 중", async () => {
       setPending(submitted);
       try {
@@ -193,18 +215,21 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
 
   function selectStep(id: string) {
     const input = inputViews.find(view => view.viewId === id);
+    logStudy(input ? "view.input" : id === OUTPUT_VIEW_ID ? "view.output" : "view.step", { from: selectedViewId, to: id, input_name: input?.name });
     setInputViewId(input?.viewId ?? null);
     if (!input) setStepId(id);
     setTableView(input?.tableView ?? "output");
   }
 
   function selectTable(id: string) {
+    logStudy("view.table", { from: tableView, to: id });
     setInputViewId(inputViews.find(view => view.tableView === id)?.viewId ?? null);
     setTableView(id);
   }
 
   function decide(action: "approve" | "deny") {
     if (!session || !preview) return;
+    logStudy(`revision.${action}`, { candidate_id: preview.id, step_id: preview.step_id });
     void perform(action === "approve" ? "전체 파이프라인 실행 중" : "후보 폐기 중", async () => {
       const next = await traceApi<Session>(`/sessions/${session.id}/revision-preview/${preview.id}/${action}`, {}, { explain: action === "approve" });
       accept(next);
@@ -214,6 +239,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   }
 
   function resize(axis: keyof PanelSizes, delta: number) {
+    logStudy("ui.panel_resize", { axis, delta, method: "keyboard" });
     setSizes((current) => {
       const limits = axis === "code" ? [25, 75] : axis === "chat" ? [20, 45] : [40, 85];
       const next = { ...current, [axis]: Math.min(limits[1], Math.max(limits[0], current[axis] + delta)) };
@@ -238,7 +264,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
       const value = Math.min(limits[1], Math.max(limits[0], initial + direction * (point - origin) / length * 100));
       setSizes((current) => { const next = { ...current, [axis]: value }; localStorage.setItem(panelKey, JSON.stringify(next)); return next; });
     };
-    const stop = () => { target.removeEventListener("pointermove", move); target.removeEventListener("pointerup", stop); target.removeEventListener("pointercancel", stop); };
+    const stop = () => { logStudy("ui.panel_resize", { axis, initial, final: JSON.parse(localStorage.getItem(panelKey) || "{}")[axis], method: "pointer" }); target.removeEventListener("pointermove", move); target.removeEventListener("pointerup", stop); target.removeEventListener("pointercancel", stop); };
     target.addEventListener("pointermove", move);
     target.addEventListener("pointerup", stop);
     target.addEventListener("pointercancel", stop);
@@ -265,6 +291,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   return (
     <div className={`workspace workspace-${condition === "in-situ" ? "in-situ" : "ex-situ"}`} ref={root} style={{ "--code-size": `${sizes.code}%`, "--chat-size": `${sizes.chat}%`, "--top-size": `${sizes.top}%` } as CSSProperties}>
       <header className="workspace-toolbar">
+        {managed ? managed.toolbar : <>
         <span className="workspace-mode">{condition === "in-situ" ? "In-situ" : "Ex-situ"}</span>
         <select aria-label="과제 선택" className="task-select" disabled={booting || !!busy || !!preview} value={taskId} onChange={(event) => setTaskId(event.target.value)}>
           {!tasks.some((task) => task.id === taskId) && <option value={taskId}>{booting ? "불러오는 중…" : session?.study_task?.title || "과제 선택"}</option>}
@@ -274,12 +301,19 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
           {busy === "실행 중" ? <LoaderCircle className="animate-spin" /> : <Play />} 실행
         </Button>
         {taskChanged && <Button size="sm" variant="ghost" onClick={() => setTaskId(session!.task_id)}>취소</Button>}
-        <div className="toolbar-spacer" />
+        </>}
+        {!managed && <div className="toolbar-spacer" />}
         {run && <span className="version-label">v{run.code_version}</span>}
         <Button size="icon-sm" variant="ghost" aria-label="이전 실행으로 되돌리기" title="되돌리기" disabled={!!busy || !!preview || !session || (!run?.parent_run_id && session.status !== "failed")} onClick={() => void perform("되돌리는 중", async () => {
           if (session) { accept(await api<Session>(`/sessions/${session.id}/undo`, {})); setFailures([]); }
         })}><RotateCcw /></Button>
-        <Button size="icon-sm" variant="ghost" aria-label="결과 CSV 다운로드" title="확정 결과 CSV 다운로드" disabled={!run} onClick={() => { location.href = `/api/sessions/${session!.id}/output.csv`; }}><Download /></Button>
+        <Button size="icon-sm" variant="ghost" aria-label="결과 CSV 다운로드" title="확정 결과 CSV 다운로드" disabled={!run || !!busy} onClick={() => void perform("결과 다운로드 중", async () => {
+          const response = await fetch(`/api/sessions/${session!.id}/output.csv`, { headers: studyHeaders() });
+          if (!response.ok) throw new Error("결과를 내려받지 못했습니다.");
+          const url = URL.createObjectURL(await response.blob());
+          const anchor = document.createElement("a"); anchor.href = url; anchor.download = `${session!.task_id}-output.csv`; anchor.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        })}><Download /></Button>
       </header>
       <div className="workspace-main">
         <div className="workspace-left">
@@ -323,15 +357,19 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
                 {visibleTable && <span className="pane-meta table-shape">{visibleTable.rows.length}행 × {visibleTable.columns.length}열</span>}
               </div>
               {!selectedInput && step?.isCandidate && tableView === "output" && <div className="candidate-comparison-note">{step.viewLabel} · {originalStep ? `Step ${originalStep.order} 수정 전 결과와 비교` : "수정 후보 실행 결과"}</div>}
-              {condition === "in-situ" && !selectedInput && !viewingOutput && tableView === "output" && !!step?.direct_tables?.length ? <div className="table-result-stack">
+              {condition === "in-situ" && !selectedInput && !viewingOutput && tableView === "output" && (!!step?.direct_tables?.length || localFilter) ? <div className="table-result-stack">
                 <div className="direct-table-result">{tableContent}</div>
-                <DirectUsedTables tables={step.direct_tables} identity={`${observedVersion}:${step.viewId}`} />
+                {localFilter && <section className="step-filter-view" aria-label="Step 내부 행 필터">
+                  <header><strong>행 필터</strong><span>{localFilter.input!.rows.length} → {localFilter.table.rows.length}행</span></header>
+                  <WorkspaceTable data={localFilter.table} stage={localFilter} identity={`${observedVersion}:${step?.viewId}:filter:${localFilter.transformations?.[0]?.id}`} />
+                </section>}
+                <DirectUsedTables tables={step?.direct_tables ?? []} identity={`${observedVersion}:${step?.viewId}`} />
               </div> : tableContent}
             </section>
           </div>
           {condition === "ex" && <>
             {separator("top", "코드·테이블과 설명 높이 조절")}
-            <ExSituExplanation step={selectedInput ? undefined : step} number={step?.order ?? 0} label={selectedInput?.viewLabel ?? step?.viewLabel} inputView={!!selectedInput} />
+            <ExSituExplanation step={selectedInput ? undefined : step} number={step?.order ?? 0} label={selectedInput?.viewLabel ?? step?.viewLabel} inputView={!!selectedInput} filterStep={localFilter} />
           </>}
         </div>
         {separator("chat", "수정 요청 영역 너비 조절")}
@@ -339,6 +377,14 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
           <div className="pane-toolbar chat-toolbar"><span>수정 요청</span>{health && <span className="pane-meta" title={health.api_configured ? "서버 API 연결됨" : "서버 API 키 설정 필요"}><span className={`api-dot ${health.api_configured ? "connected" : ""}`} />{health.model}</span>}</div>
           <div className="chat-messages" role="log" aria-label="수정 요청 기록" aria-live="polite">
             {messages.map((message) => <ChatMessage key={message.id} message={message} />)}
+            {session?.revision_history?.map(entry => <div key={entry.id} className="revision-chat-history" aria-label="수정 기록">
+              <div className="chat-request">{entry.request}</div>
+              <div className="chat-response revision-review-card">
+                <strong>{entry.label} · {entry.status === "approved" ? "승인됨" : "거부됨"}</strong>
+                {entry.assumptions?.map((text,index) => <p key={index}>{text}</p>)}
+                {entry.error && <p>{entry.error}</p>}
+              </div>
+            </div>)}
             {failures.map((message) => <ChatMessage key={message.id} message={message} />)}
             {pending && <><div className="chat-request">{pending.request}</div><div className="chat-response chat-working"><LoaderCircle size={14} className="animate-spin" />{busy}</div></>}
             {preview && <div className="revision-chat-review" aria-label="수정 후보 확인">

@@ -5,6 +5,7 @@ from typing import Protocol
 from typing import Literal
 import httpx
 from .connection_errors import api_connection_error
+from .experiment import llm_record
 from pydantic import BaseModel, Field
 
 DEFAULT_MODEL='gpt-6-luna' # Verified 2026-10-29: https://developers.openai.com/api/docs/models
@@ -198,6 +199,7 @@ class OpenAIGenerator:
         try:
             with httpx.Client(timeout=90) as client:
                 res=client.post(os.getenv('OPENAI_BASE_URL','https://api.openai.com/v1').rstrip('/')+'/responses',headers={'Authorization':f'Bearer {key}'},json=payload)
+            llm_record(payload,res,'code_generation_or_revision')
             if res.status_code!=200: raise ValueError(f'LLM API 요청 실패 (HTTP {res.status_code}). 키·모델 접근권한·설정을 확인하세요.')
             body=res.json();texts=[part['text'] for item in body.get('output',[]) for part in item.get('content',[]) if part.get('type')=='output_text']
             if body.get('status')!='completed' or not texts: raise ValueError('LLM 응답이 완료되지 않았거나 코드가 없습니다.')

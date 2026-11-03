@@ -29,6 +29,9 @@ def effects(operation):
     new_order = [c for c in new_cols if c in old_cols]
     retyped = {c for c in common_cols if before['stats']['fields'].get(c,{}).get('dtype') != after['stats']['fields'].get(c,{}).get('dtype')}
     changed = retyped | {c for i,c in enumerate(new_order) if old_order[i] != c}
+    # A verified aggregation changes an entire column vector even without
+    # one-to-one row identity. Do not invent changed cell/row pairs for it.
+    changed.update(c for c in operation.get('schema_origins',{}).get('changed',{}) if c in common_cols)
 
     def cell(kind, column, row_id):
         result['cells'][kind].setdefault(column, []).append(row_id)
@@ -74,6 +77,7 @@ def equal_location(a,b):
 
 def compatible(item, operation):
     kind = operation.get('kind')
+    if kind=='construction':return item['method'] in ('DataFrame','concat','from_records','from_dict','array','pivot','pivot_table','melt')
     if kind=='assignment':return item['method']=='assignment'
     if item['method']=='assignment':return False
     if kind=='observed':return True

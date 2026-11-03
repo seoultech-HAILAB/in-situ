@@ -54,7 +54,42 @@ def location(node):
 def quoted(values): return ', '.join(f'“{v}”' for v in values)
 
 
+def object_phrase(value):
+    last=value[-1:] or '값'
+    ending='을' if '\uac00'<=last<='\ud7a3' and (ord(last)-0xac00)%28 else '를'
+    return value+ending
+
+
 def readable(node):
+    if isinstance(node,ast.Subscript) and isinstance(node.value,ast.Attribute) and node.value.attr=='str':
+        position=getattr(node.slice,'value',None)
+        label='첫 번째 항목' if position==0 else f'{position+1}번째 항목' if isinstance(position,int) and position>=0 else '지정한 위치의 항목'
+        return f'{readable(node.value.value)}에서 {label}을 선택한 값'
+    if isinstance(node,ast.Call):
+        method=node.func.attr if isinstance(node.func,ast.Attribute) else node.func.id if isinstance(node.func,ast.Name) else ''
+        source=node.args[0] if method in ('to_numeric','to_datetime','round','set','sorted') and node.args else node.func.value if isinstance(node.func,ast.Attribute) else None
+        if isinstance(source,ast.Attribute) and source.attr=='str':source=source.value
+        fields=[field for field in columns(source) if not field.isdecimal()]
+        subject=quoted(fields)+' 값' if fields else '선택한 값'
+        if method=='to_numeric':
+            coerce=any(k.arg=='errors' and isinstance(k.value,ast.Constant) and k.value.value=='coerce' for k in node.keywords)
+            return f'{object_phrase(subject)} 숫자로 변환'+('하고 변환할 수 없는 값을 결측값으로 처리한 결과' if coerce else '한 결과')
+        if method=='to_datetime':return f'{object_phrase(subject)} 날짜·시간으로 변환한 결과'
+        if method=='astype':
+            dtype=str(getattr(node.args[0],'id',getattr(node.args[0],'value','지정한 형식'))) if node.args else '지정한 형식'
+            dtype={'int':'정수','float':'실수','str':'문자열','bool':'참·거짓'}.get(dtype,dtype)
+            return f'{object_phrase(readable(source))} {dtype}로 변환한 결과'
+        words={'strip':'양끝 공백을 제거한 결과','lstrip':'왼쪽 공백을 제거한 결과','rstrip':'오른쪽 공백을 제거한 결과',
+               'upper':'대문자로 바꾼 결과','lower':'소문자로 바꾼 결과','title':'단어 첫 글자를 대문자로 바꾼 결과','casefold':'대소문자 구분 없이 비교할 수 있는 형태로 바꾼 결과'}
+        if method in words:return f'{object_phrase(subject)} {words[method]}'
+        if method=='copy':return '선택한 표를 복사한 결과'
+        if method=='set':return '선택한 값의 중복을 제거한 집합'
+        if method=='split':
+            separator=ast.unparse(node.args[0]) if node.args else '공백'
+            return f'{object_phrase(subject)} {separator} 기준으로 나눈 결과'
+        if method=='round' and node.args:
+            digits=ast.unparse(node.args[1]) if len(node.args)>1 else '0'
+            return f'{object_phrase(readable(node.args[0]))} 소수점 {digits}자리로 반올림한 결과'
     cols = columns(node)
     if cols: return quoted(cols) + ' 값'
     if isinstance(node, ast.Constant): return str(node.value)
@@ -64,7 +99,7 @@ def readable(node):
         phrases={ast.Add:f'{left}에 {right}을 더한 값', ast.Sub:f'{left}에서 {right}을 뺀 값', ast.Mult:f'{left}에 {right}을 곱한 값', ast.Div:f'{left}을 {right}로 나눈 값', ast.FloorDiv:f'{left}을 {right}로 나눈 몫', ast.Mod:f'{left}을 {right}로 나눈 나머지', ast.Pow:f'{left}의 {right}제곱'}
         return phrases.get(type(node.op),'코드의 계산 결과')
     if isinstance(node, ast.IfExp): return f'{condition_text(node.test)}이면 {readable(node.body)}, 아니면 {readable(node.orelse)}'
-    return '코드에 지정된 계산 결과'
+    return '선택한 계산식의 결과'
 
 
 def condition_text(node):
@@ -87,7 +122,7 @@ def description(method, kind, node, targets):
     if method == 'formula':
         value = node.value if isinstance(node, (ast.keyword, ast.Assign, ast.AnnAssign, ast.AugAssign)) else node
         if isinstance(node,ast.AugAssign):value=ast.BinOp(left=node.target,op=node.op,right=node.value)
-        return f'{readable(value)}을 {quoted(targets) or "출력"}에 저장합니다.'
+        return f'{object_phrase(readable(value))} {quoted(targets) or "출력"}에 저장합니다.'
     if method == 'select': return f'{quoted(targets)} 열을 선택합니다.'
     if method == 'selection': return '코드에 지정한 행·열만 선택해 결과에 남깁니다.'
     if method in ('astype', 'to_numeric', 'to_datetime'):
@@ -312,7 +347,7 @@ def annotate_run(run):
             target=quoted(written)
             if isinstance(value,ast.Call) and isinstance(value.func,ast.Attribute) and value.func.attr=='strip':
                 text=f'선택한 값의 양끝 공백을 제거해 {target} 열에 저장합니다.'
-            else:text=f'{readable(value)}을 {target} 열에 저장합니다.'
+            else:text=f'{object_phrase(readable(value))} {target} 열에 저장합니다.'
             contributing=any(item['statement_index']==observation['statement_index'] and item.get('contributes_to_output') is not False for item in fresh)
             fresh.append({'id':'transform-assignment-'+hashlib.sha256(json.dumps([loc,snippet,written],sort_keys=True).encode()).hexdigest()[:16],
                 'kind':'derive','method':'assignment','code':snippet,'code_location':loc,'output_columns':written,'input_columns':[],

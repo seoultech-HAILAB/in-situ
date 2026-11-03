@@ -44,6 +44,16 @@ def _pending(server, session, preview_id, statuses):
     return pending
 
 
+def remember_decision(server, session, pending, status, run_id=None):
+    # Keep the exact review prose after the disposable execution candidate is gone.
+    entry = {key: deepcopy(pending[key]) for key in
+             ('id', 'base_run_id', 'step_id', 'step_number', 'label', 'request', 'assumptions', 'error') if key in pending}
+    entry.update(status=status, decided_at=server.now())
+    if run_id:
+        entry['run_id'] = run_id
+    session.setdefault('revision_history', []).append(entry)
+
+
 def install(app):
     server = importlib.import_module('backend.app')
 
@@ -115,6 +125,7 @@ def install(app):
         with server.lock(sid):
             session = server.read(sid)
             _pending(server, session, pending['id'], ('generating',))
+            server.experiment.authorize_session(server, session, mutate=True)
             session['pending_revision'] = ready
             server.event(session, 'revision_preview_ready' if ready['status'] == 'ready' else 'revision_preview_failed',
                          {'preview_id': pending['id'], 'step_id': target_id, 'error': ready.get('error')})
@@ -145,7 +156,9 @@ def install(app):
         with server.lock(sid):
             session = server.read(sid)
             _pending(server, session, preview_id, ('approving',))
+            server.experiment.authorize_session(server, session, mutate=True)
             session['runs'].append(run)
+            remember_decision(server, session, pending, 'approved', run['id'])
             session.update(cursor=len(session['runs']) - 1, status='ready', error=None, confirmed=None, pending_revision=None)
             server.event(session, 'revision_approved', {'preview_id': preview_id, 'step_id': pending['step_id']})
             server.save(session)
@@ -155,7 +168,8 @@ def install(app):
     def deny(sid: str, preview_id: str):
         with server.lock(sid):
             session = server.read(sid)
-            _pending(server, session, preview_id, ('ready', 'failed'))
+            pending = _pending(server, session, preview_id, ('ready', 'failed'))
+            remember_decision(server, session, pending, 'denied')
             session['pending_revision'] = None
             server.event(session, 'revision_denied', {'preview_id': preview_id})
             server.save(session)

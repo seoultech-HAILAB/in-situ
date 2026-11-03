@@ -44,7 +44,7 @@ export function workspaceDiff(stage: Stage, comparison?: Table): WorkspaceDiff {
   const oldRows = new Map(before.rows.map((row, i) => [row.id, { row, number: i + 1 }]));
   const oldColumns = new Set(before.columns), outputColumns = new Set(after.columns);
   const columns: DiffColumn[] = withDeleted(after.columns, before.columns, c => c).map(name => ({ name,
-    kind: !outputColumns.has(name) ? "removed" : !oldColumns.has(name) ? "added" : undefined }));
+    kind: !outputColumns.has(name) ? "removed" : !oldColumns.has(name) ? "added" : !comparison && stage.schema_origins?.changed?.[name]?.length ? "changed" : undefined }));
   // Observation IDs in untraced Python are not correspondence. Never align
   // unrelated rows by their position, coincidentally equal IDs, or cell values.
   const preserving = new Set(["filter", "derive", "select", "drop", "rename", "sort_values", "astype", "fillna", "dropna", "drop_duplicates", "replace", "reset_index", "copy", "head", "tail"]);

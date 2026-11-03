@@ -6,13 +6,14 @@ or coincidentally equal indexes of unrelated frames never establishes identity.
 import ast
 import copy
 import json
+import weakref
 
 import pandas as pd
 
 from .python_provenance import ProvenanceInterpreter
 from .runtime import Frame, Value, digest, table
 
-VERSION='native-statements-v3'
+VERSION='native-statements-v7'
 MUTATORS={'drop','dropna','drop_duplicates','sort_values','sort_index','reset_index','set_index','rename',
           'pop','insert','update','resize','reindex','set_axis'}
 
@@ -77,6 +78,103 @@ def selection_source(node,before,helpers):
     source=value.value
     if isinstance(source,ast.Attribute) and source.attr in ('loc','iloc'):source=source.value
     return source.id if isinstance(source,ast.Name) and source.id in before['frames'] else None
+
+
+class SchemaObservations:
+    """Actual per-statement schema writes, including repeated loop iterations.
+
+    Collect only column names, never evaluate expressions or infer row identity.
+    This lightweight ledger survives failed/limited detailed snapshots.
+    """
+    def __init__(self,nodes):
+        self.sites={};self.pending={};self.records={};self.origins={}
+        for index,root in nodes:
+            for node in ast.walk(root):
+                if not isinstance(node,(ast.Assign,ast.AnnAssign,ast.AugAssign,ast.Delete)):continue
+                targets=node.targets if isinstance(node,(ast.Assign,ast.Delete)) else [node.target]
+                names=[]
+                for target in targets:
+                    while isinstance(target,(ast.Subscript,ast.Attribute)):target=target.value
+                    if isinstance(target,ast.Name):names.append(target.id)
+                if names:self.sites.setdefault(node.lineno,[]).append((index,node,names))
+
+    @staticmethod
+    def columns(env,name):
+        value=env.get(name)
+        return [str(column) for column in value.columns] if isinstance(value,pd.DataFrame) else []
+
+    @staticmethod
+    def source(env,node):
+        # Inspect existing objects only; never evaluate a pandas expression.
+        if isinstance(node,ast.Call):
+            return SchemaObservations.source(env,node.func.value) if isinstance(node.func,ast.Attribute) else None
+        if isinstance(node,ast.Attribute):return SchemaObservations.source(env,node.value)
+        if isinstance(node,ast.Subscript):
+            if isinstance(node.value,ast.Name) and node.value.id=='tables' and isinstance(node.slice,ast.Constant):
+                return env.get('tables',{}).get(node.slice.value)
+            return SchemaObservations.source(env,node.value)
+        value=env.get(node.id) if isinstance(node,ast.Name) else None
+        return value if isinstance(value,pd.DataFrame) else None
+
+    def for_frame(self,value):
+        entry=self.origins.get(id(value))
+        if not entry or entry['reference']() is not value:return {'added':{},'removed':{},'changed':{}}
+        return {kind:copy.deepcopy(entry[kind]) for kind in ('added','removed','changed')}
+
+    @staticmethod
+    def aggregate_columns(node):
+        value=getattr(node,'value',None)
+        if not (isinstance(value,ast.Call) and isinstance(value.func,ast.Attribute) and value.func.attr in ('agg','aggregate')):return []
+        result=[]
+        for keyword in value.keywords:
+            pairs=[(keyword.arg,keyword.value)] if keyword.arg else list(zip(keyword.value.keys,keyword.value.values)) if isinstance(keyword.value,ast.Dict) else []
+            for name,spec in pairs:
+                name=name.value if isinstance(name,ast.Constant) else name
+                if isinstance(spec,ast.Tuple) and len(spec.elts)==2 and isinstance(spec.elts[0],ast.Constant) and name==spec.elts[0].value:
+                    result.append(str(name))
+        return result
+
+    def trace(self,frame,event):
+        identity=id(frame)
+        pending=self.pending.get(identity)
+        if pending and (event=='return' or event=='line' and not pending[1].lineno<=frame.f_lineno<=pending[1].end_lineno):
+            index,node,before=pending
+            for name,baseline in before.items():
+                value=frame.f_locals.get(name)
+                if not isinstance(value,pd.DataFrame):continue
+                old=baseline['columns'];new=self.columns(frame.f_locals,name)
+                inherited=baseline['origins'];site=location(node)
+                origins={'added':{c:v for c,v in inherited['added'].items() if c in new},
+                         'changed':{c:v for c,v in inherited['changed'].items() if c in new},
+                         'removed':{c:v for c,v in inherited['removed'].items() if c not in new}}
+                for column in new:
+                    if column not in old:origins['added'][column]=[site]
+                for column in old:
+                    if column not in new:origins['removed'][column]=[site]
+                if baseline['rows'] is not None and baseline['rows']!=len(value):
+                    for column in self.aggregate_columns(node):
+                        if column in old and column in new:origins['changed'][column]=[site]
+                object_id=id(value)
+                self.origins[object_id]={**origins,'reference':weakref.ref(value,lambda _,oid=object_id:self.origins.pop(oid,None))}
+                if old==new:continue
+                record=self.records.setdefault((node.lineno,node.col_offset,name),{
+                    'statement_index':index,'code_location':location(node),'output_variable':name,'added':[],'removed':[]})
+                for kind,values in (('added',[c for c in new if c not in old]),('removed',[c for c in old if c not in new])):
+                    record[kind]=list(dict.fromkeys(record[kind]+values))
+            self.pending.pop(identity,None)
+        if event=='line' and identity not in self.pending:
+            sites=self.sites.get(frame.f_lineno,[])
+            if sites:
+                index,node,names=sites[0]
+                before={}
+                for name in names:
+                    targets=node.targets if isinstance(node,(ast.Assign,ast.Delete)) else [node.target]
+                    rebound=any(isinstance(target,ast.Name) and target.id==name for target in targets)
+                    source=self.source(frame.f_locals,getattr(node,'value',None)) if rebound else frame.f_locals.get(name)
+                    before[name]={'columns':[str(c) for c in source.columns] if isinstance(source,pd.DataFrame) else [],
+                                  'rows':len(source) if isinstance(source,pd.DataFrame) else None,
+                                  'origins':self.for_frame(source)}
+                self.pending[identity]=(index,node,before)
 
 
 class Observations:
@@ -167,6 +265,15 @@ class Observations:
                     'statement_index':index,'output_variable':name,'row_identity_verified':identity,
                     'trace_level':'common','observation_scope':'statement','executed_lines':sorted(executed_lines)}
                 self.append(operation)
+            elif name not in prior:
+                # A real DataFrame constructed from Python containers is still
+                # an observed output. No row identity or previous table is invented.
+                value=getattr(node,'value',None)
+                self.append({'kind':'construction','table':table(df,ids),'input':table(pd.DataFrame(),[]),
+                    'code':ast.get_source_segment(self.code,node),'code_location':location(node),
+                    'expression_location':location(value) if value is not None and hasattr(value,'lineno') else None,
+                    'statement_index':index,'output_variable':name,'row_identity_verified':False,
+                    'trace_level':'common','observation_scope':'construction','executed_lines':sorted(executed_lines)})
             self.identities[name]=ids
             self.origins[name]=origins
 

@@ -139,3 +139,42 @@ def test_explicit_refresh_upgrades_legacy_explanations_without_reexecuting_code(
     assert fresh['stages'][1]['transformations'][0]['description']['source']=='llm'
     assert fresh['id']==old['id'] and fresh['code']==old['code'] and fresh['stages'][1]['table']==old['stages'][1]['table']
     assert calls==[False,True]
+
+
+def test_reordered_column_targets_preserve_text_without_model_call(monkeypatch):
+    run=snapshot();raw=bundle(run)
+    original=copy.deepcopy(raw['columns']);raw['columns']=list(reversed(original))
+    def forbidden(*args,**kwargs):raise AssertionError('Exact reordered IDs require no API request')
+    monkeypatch.setattr(httpx.Client,'post',forbidden)
+    explanations.repair_column_targets(run,raw,'unused')
+    assert raw['columns']==original
+
+
+@pytest.mark.parametrize('valid',[True,False])
+def test_column_target_repair_uses_server_ids_and_never_changes_other_sections(monkeypatch,valid):
+    run=snapshot();raw=bundle(run)
+    expected=copy.deepcopy(raw['columns'])
+    raw['columns'][0]['operation_no']=999
+    before=copy.deepcopy(raw)
+    calls=[]
+    def post(self,url,headers,json):
+        calls.append(json)
+        data=__import__('json').loads(json['input'])
+        assert 'PRIVATE_INPUT_VALUE' not in json['input']
+        assert [item['operation_no'] for item in data]==[item['operation_no'] for item in expected]
+        result=[{'target_id':item['target_id'],'text':'수량을 두 배로 계산'} for item in reversed(data)]
+        if not valid:result[0]['target_id']='invented-id'
+        return httpx.Response(200,json={'status':'completed','output':[{'content':[{
+            'type':'output_text','text':__import__('json').dumps({'columns':result})}]}]})
+    monkeypatch.setattr(httpx.Client,'post',post)
+    if valid:
+        repair=explanations.repair_column_targets(run,raw,'test-key')
+        assert repair['source']=='llm_target_ids'
+        assert [{k:v for k,v in item.items() if k!='text'} for item in raw['columns']]==[{k:v for k,v in item.items() if k!='text'} for item in expected]
+        explanations.validate_steps(raw,1,run)
+    else:
+        with pytest.raises(ValueError,match='실제 연산'):
+            explanations.repair_column_targets(run,raw,'test-key')
+        assert raw['columns']==before['columns']
+    assert len(calls)==1
+    assert {k:v for k,v in raw.items() if k!='columns'}=={k:v for k,v in before.items() if k!='columns'}

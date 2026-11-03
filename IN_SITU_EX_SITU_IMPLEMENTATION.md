@@ -1,6 +1,6 @@
 # In-situ / Ex-situ 공통 구현과 차이
 
-작성 기준: 2026-11-03, `in-situ` 브랜치의 현재 구현.
+작성 기준: 2026-11-04, `in-situ` 브랜치의 현재 구현. 참가자 주소는 Tutorial에서 시작하며, 기존 작업 화면은 로컬 주소에 `?research=1`을 붙여 연다. 실험 운영 상세는 [EXPERIMENT_SETUP.md](EXPERIMENT_SETUP.md)를 따른다.
 
 이 문서는 현재 코드에 구현된 동작을 설명한다. 프롬프트로 요청하는 규칙, 서버에서 검증하는 제약, 화면에서 제공하는 기능을 구분한다.
 
@@ -73,6 +73,10 @@ Step은 연속된 최상위 Python AST 문장들의 묶음이다. 한 Step 안�
 - 기존 Step ID는 서버가 관리한다. LLM이 임의의 기존 Step ID를 만들어 사용할 수 없다.
 
 ### 실행 결과와 상세 추적은 분리한다
+
+실행한 문장과 줄 번호는 스냅샷·상세 어댑터의 성공 여부와 독립적으로 보존한다. 반복문 안에서 각 문장이 실제로 추가·제거한 열 이름도 값 복사 없이 기록한다. 리스트·딕셔너리에서 만든 DataFrame도 실제 출력과 코드 위치를 기록한다. 직접 읽은 입력 표가 없으면 빈 생성 기준 표와 비교하며, 마지막으로 등록된 무관한 표를 대신 선택하지 않는다.
+
+현재 Step 안의 명시적 행 목록 위치·출력 열 이름과 실행된 계산문의 대응을 기록한다. 예를 들어 T05의 `Count`, `Monthly Spend`, `Potential Savings`는 각각 현재 Step의 횟수·월 지출·절감액 계산문에 연결한다. 생성 구문에 포함되지 않은 열의 출력 제외는 해당 생성 구문에만 연결하고 정렬·다른 열의 숫자 변환으로 대체하지 않는다. 이 대응은 이전 Step의 변수 정의를 팝오버에 추가하거나 원본부터의 처리 경로를 설명하는 기능이 아니다.
 
 기본 native Python 경로는 pandas 코드를 실제로 실행해 Step별 DataFrame을 관찰한다. 상세 추적 어댑터가 특정 구문을 지원하지 못해도, 성공한 실제 실행과 관찰 가능한 다른 구문의 기록을 버리지 않는다.
 
@@ -166,6 +170,8 @@ LLM은 `scope: auto` 맥락에서 `revision_scope`를 제안한다. 범위를 �
 
 승인 대기는 모달로 화면을 막지 않는다. 대기 중에도 Step 전환, 기존·후보 표 비교, In-situ 하이라이트 선택, 설명·코드 열람이 가능하다. 대기 후보가 있는 동안 새 수정 요청이나 중복 승인·거부는 제한한다. 승인·생성의 모델 호출과 실행은 세션 잠금 밖에서 처리하고, 최종 저장 시 기준 버전과 후보 상태를 다시 검사한다.
 
+두 조건 모두 승인 대기 카드의 수정 요청과 설명을 세션의 `revision_history`에 저장한다. Approve·Deny 이후에도 chatroom에 원문 설명과 승인·거부 상태가 남으며, 새로고침 후 복원된다. 결정이 끝난 기록에는 승인·거부 버튼을 표시하지 않는다.
+
 파이프라인 범위 수정이더라도 **Preview는 현재 Step 하나**라는 정책은 동일하다. 따라서 Preview가 모든 후속 변경의 결과까지 미리 보장하는 것은 아니다.
 
 관련 코드: [revision_preview.py](backend/revision_preview.py), [revision-workspace.ts](web/components/trace/revision-workspace.ts).
@@ -190,6 +196,7 @@ In-situ는 이 정보로 전후 비교 표를 만들고, Ex-situ는 실제 출�
 현재 Step의 결과 생성에 직접 사용한 보조 표를 실제 사용 당시의 데이터로 표시한다. 이전 Step에서 결합된 정보가 결과에 남아 있다는 이유만으로 그 원본 표를 다시 표시하지 않는다.
 
 - 실행된 `merge`, `join`, `concat`, 일부 계산·필터의 실제 입력 기록을 확인한다.
+- 상세 재현이 실패하는 반복문도 원래 Python 실행 중 성공한 pandas 결합 호출의 실제 입력 표를 별도로 기록한다. 표현식을 재실행하거나 generator를 미리 소비하지 않는다. 반복마다 입력 값이나 열 구성이 달라지면 각 사용 시점의 표를 보존한다.
 - 결과로 이어지는 현재 Step의 연산과 직접 DataFrame 참조 여부를 확인한다.
 - 실행되지 않은 분기, 결과에 쓰이지 않은 별도 계산, 보수적인 전체 Step 입력 목록만 있는 경우는 표시 근거로 사용하지 않는다.
 - 이전 Step에서 만든 스칼라 값의 영향만 이어진 경우는 직접 표 사용으로 보지 않는다.
@@ -200,7 +207,9 @@ In-situ는 이 정보로 전후 비교 표를 만들고, Ex-situ는 실제 출�
 
 T01에서는 환율 표 `rates`를 직접 결합하는 Step 3에 표와 `Currency` 기준 결합 설명이 표시되고, 그 결과를 정렬·변환하는 Step 4에는 다시 표시되지 않는다.
 
-관련 코드: [direct_tables.py](backend/direct_tables.py), [direct-used-tables.tsx](web/components/trace/direct-used-tables.tsx).
+전체 12개 과제의 초기·정답 코드 24개, 94개 Step을 대조해 T03 Step 2의 측정 항목 표 3개, T04 Step 2의 매출·이익 표 2개, T05 Step 1의 메뉴 부분 표 결합 누락을 보완했다. T06 및 VERIFY2-M4-A의 같은 값·열을 가진 보조 표는 내부 행 ID가 달라도 중복 표시하지 않는다. 저장된 세션은 `native-table-calls-v1` 관찰 정보를 보충하되 기존 코드·실행 결과·Step·LLM 설명을 유지한다.
+
+관련 코드: [direct_tables.py](backend/direct_tables.py), [table_call_observations.py](backend/table_call_observations.py), [direct-used-tables.tsx](web/components/trace/direct-used-tables.tsx).
 
 ## 9. 조건별 표현의 세부 차이
 
@@ -241,14 +250,22 @@ T01에서는 환율 표 `rates`를 직접 결합하는 Step 3에 표와 `Currenc
 | 항목 | 현재 값 / 동작 |
 | --- | --- |
 | AST 변환 버전 | `ast-transformations-v3` |
-| 문장 관찰 버전 | `native-statements-v3` |
-| 변화 연결 계약 | `observed-change-links-v1` |
-| 설명 프롬프트 버전 | `observed-diff-korean-prose-v6` |
+| 문장 관찰 버전 | `native-statements-v7` |
+| 변화 연결 계약 | `observed-change-links-v2` |
+| 설명 프롬프트 버전 | `observed-diff-korean-prose-v8` |
 | 캐시 구분 | 코드·Step 경계·관찰 데이터·모델·프롬프트 등으로 구분 |
 | 저장된 연결 검증 | 실행 ID·코드 버전·코드·전체 관찰 테이블과 연결 계약을 확인 |
 | 설명 모델 설정 | 서버 `.env`의 `OPENAI_EXPLANATION_MODEL` 또는 `OPENAI_MODEL` 등 |
 | API 키 | 서버에서 사용. 브라우저나 커밋에 포함하지 않음 |
 | native 실행 제한 | 코드 30,000자, 최상위 문장 최대 40개, 관찰 DataFrame 최대 2,000행·64열, 격리 실행 기본 20초 등 |
+
+설명 생성 성공과 개별 변화 연결의 완성도는 구분한다. `explanation_meta.change_link_coverage`에 `linked`, `ambiguous`, `unresolved` 건수를 기록한다. 연결 후보는 LLM이 작성한 설명을 적용한 뒤에도 같은 ID와 코드 위치를 유지하며, 무관한 정렬·다른 열 변환을 대체 후보로 제공하지 않는다.
+
+열 설명의 `(Step, 연산 번호, 열)`이 같은 집합으로 순서만 바뀌면 서버 순서로 복원한다. 대상 누락·중복·잘못된 번호는 해당 열 설명만 서버 발급 ID로 한 번 재요청한다. 변화 대응 목록도 정상 항목은 보존하고 누락·잘못된 항목만 서버 발급 참조 ID와 실제 코드 후보로 한 번 재요청한다. 보정 결과는 모든 ID·후보·설명 범위를 다시 검증하며, 확인되지 않은 코드를 만들어 연결하지 않는다.
+
+새 실험 순서는 `PILOT4-TRAIN` 튜토리얼 → T07 → T01 → T03이며 실험 버전은 `timed-study-v2`다. 각 실험에 과제 순서를 저장한다. 이전 버전의 과제 순서와 이벤트 라벨은 원래대로 보존하며, 참가자 화면은 새 버전의 튜토리얼로 전환한다. T07의 숫자 변환·전치, T03의 같은 열 이름을 유지하는 매출 집계도 실제 연산에 연결한다. 집계 행 대응을 확인하지 못하면 열 제목만 변환으로 표시하며, 개별 셀·행의 대응을 추정하지 않는다.
+
+T07 Step 2에만 실행 기록의 국적 필터 전후 표를 추가로 열람할 수 있다. Python 코드와 Step 경계는 원래대로 유지한다. In-situ는 중간 결과 아래에 해당 필터의 실제 유지·제외 행을 표시하며 제외 행을 누르면 기존 필터 설명과 코드를 보여준다. Ex-situ는 동일한 필터 설명·코드와 전후 행 수를 설명 목록 맨 앞에 표시한다. 문구나 Canada 조건을 고정 주입하지 않으며 현재 실행 버전의 연산 설명을 재사용한다. 실행으로 확인된 행 대응과 코드 연결이 없거나 T07 Step 2가 아니면 추가 표시를 제공하지 않는다. 공통 분석·설명 생성 로직은 변경하지 않는다.
 
 실제 코드는 별도 프로세스에서 실행한다. 허용 import, 파일·네트워크·프로세스 접근, 관찰 크기, 실행 시간 등을 제한한다. Windows에서는 Job Object로 프로세스 수·메모리 제한도 적용한다. 상세 추적의 지원 범위와 실행 자체의 허용 범위는 다르다.
 
@@ -271,6 +288,7 @@ npm.cmd --prefix web run build
 | 검증 대상 | 테스트 |
 | --- | --- |
 | 개별 관찰 실패에도 기록 유지, T01 City 생성·Location 삭제 연결 | [test_statement_observations.py](tests/test_statement_observations.py) |
+| T05 생성·계산 코드, 무관한 비교 표·코드 차단, 기존 실행 결과를 보존한 관찰 갱신 | [test_constructed_tables.py](tests/test_constructed_tables.py) |
 | 실제 차이 기반 연결, 미실행·관련 없는 코드 거부, 미확인 행, 설명 범위 재요청 | [test_observed_changes.py](tests/test_observed_changes.py) |
 | 설명 API의 버전 일치, 관찰 예시, 캐시, 실행 결과 불변 | [test_explanations.py](tests/test_explanations.py) |
 | 현재 코드만 설명하고 이전 변수 맥락을 제거하는 정책 | [test_local_explanations.py](tests/test_local_explanations.py) |
@@ -279,4 +297,10 @@ npm.cmd --prefix web run build
 | 하이라이트 대상·유형 일치와 미확인 행 구분 | [workspace-diff.cjs](tests/workspace-diff.cjs) |
 | 공통 UI, Ex-situ 제목 색상·변경 열 분류, 단색 코드·원본 줄 번호 | [workspace-table.cjs](tests/workspace-table.cjs) |
 
-이 문서 작성은 현재 동작을 정리한 작업이며, 위에 명시한 수정 범위나 실행 제한을 새로 강화하는 코드 변경을 포함하지 않는다.
+아래 실험 진행 기능에서도 위에 명시한 연산·Step 설명과 수정 후보 처리 방식을 공통으로 사용한다.
+
+## 사용자 실험 진행 기능
+
+두 조건의 참가자 진입점은 기존 학생 행사 참여 내역 연결 Tutorial(`PILOT4-TRAIN`)에서 시작하고 T07·T01·T03을 순서대로 실행한다. 각 과제의 15분 제한은 과제 화면 위 시작 창의 버튼을 누른 시점부터 서버가 관리한다. 종료 버튼은 확인/취소 창을 거치며 과제 사이 1분 휴식은 바로 건너뛸 수 있다. 상단은 Task 순서 번호와 남은 시간으로 표시하며, 두 조건 모두 서버의 LLM API와 동일한 수정·설명 처리를 사용한다. 기존 작업 화면은 로컬 주소에 `?research=1`을 붙여 접근한다. 참가자 전용 게이트웨이, 행동 라벨·코드 및 실행 스냅샷, 연결 끊김 복구와 로그 내보내기 상세는 [EXPERIMENT_SETUP.md](EXPERIMENT_SETUP.md)를 참고한다.
+
+튜토리얼과 본실험 시작 안내는 참가자용 PDF의 해당 원문 페이지(입력·처리 조건·목표 결과)를 표시한다. 시작 버튼은 스크롤 영역 아래에 고정하며 페이지가 로드된 뒤 활성화한다. 안내 열람 중에는 본실험 시간이 흐르지 않고, 시작 후에도 하단의 과제 안내에서 같은 페이지를 다시 볼 수 있다. 두 조건은 동일한 페이지를 사용하며 과제 Python 코드나 LLM 설명 생성에는 영향을 주지 않는다.

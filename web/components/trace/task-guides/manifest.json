@@ -1,0 +1,26 @@
+{
+  "source": "참가자용_과제안내_튜토리얼_T01_T03_T07.pdf",
+  "source_sha256": "529f8b8fcb7f8ab5ab546b39062aa4db2d399c92b28486f8057bac42823991bc",
+  "pages": {
+    "PILOT4-TRAIN": {
+      "page": 1,
+      "image": "tutorial.png",
+      "text": "참가자용 과제 안내\n튜토리얼\n1 / 4\n튜토리얼 | 학생 행사 참여 내역 정리\n학교 행정팀에서 학생 명부에 등록된 학생들의 행사 참여 내역을 정리합니다.\n입력: input_01.csv(학생 명부), input_02.csv(행사 기록)\n처리 조건\n• 두 자료의 연결 기준은 'student_id'이다.\n• 학생 명부에 있는 학생의 행사 기록만 포함한다.\n• 'ety_cd' 값은 제한하지 않는다. 비어 있는 기록도 포함한다.\n• 행 순서는 행사 입력 자료의 순서와 같아야 한다.\n• 출력 열은 'bio_data', 'event_date' 순서의 두 열이어야 한다.\n• 'event_date'는 소수점 이하를 포함한 원본 문자열을 유지해야 한다.\n목표 결과 | 전체 4행 × 2열\nbio_data\nevent_date\nDino\n2008-08-15 22:16:17.000\nHouston\n2014-07-15 18:18:15.000\nLouvenia\n2013-04-14 04:14:10.000\nBrenden\n2012-12-06 06:44:53.000\n코드와 실행 결과가 위 조건을 만족하는지 확인한다. 수정은 자연어로 요청하고, 수정 후보의 결과를 확인한 뒤 승인\n또는 거부한다.\n"
+    },
+    "PILOT4-T01": {
+      "page": 2,
+      "image": "t01.png",
+      "text": "참가자용 과제 안내\nT01\n2 / 4\n해외사업팀에서 우편 구역별 신규 매장 입지 후보를 선정합니다.\n입력: input_01.csv(입지 후보), input_02.csv(통화별 환율)\n처리 조건\n• 'City'와 'Country'는 'Location'의 첫 쉼표를 기준으로 구분하고 앞뒤 공백을 제거한다.\n• 'City'·'Country'의 허용 조합은 New York / United States, San Francisco / United States, Miami / \nUnited States, Monterrey / Mexico뿐이다. 철자가 다르면 제외하며 임의로 교정하지 않는다.\n• 'Potential Store Location'은 Z-를 포함한 문자열 'Zip Code'로 유지해야 한다.\n• 'Store Cost'와 'Store Potential Sales'는 통화 표시를 제거한 정수 금액이어야 한다.\n• 'Currency'는 3글자 통화 코드이다. 'Store Potential Sales'의 코드를 우선 사용하고, 없으면 'Store Cost'의 \n코드를 사용한다. 둘 다 없으면 해당 행을 제외한다.\n• 선정 대상은 'Store Cost' ≤ 'Store Potential Sales'인 후보이다.\n• 'Zip Code'별 'Store Potential Sales'가 최대인 후보를 하나만 남긴다. 동률이면 입력에서 먼저 나온 후보를 남\n긴다.\n• 'Currency'가 일치하는 'Value in USD'를 붙인다. 환율이 없어도 후보는 유지한다.\n'Store Potential Sales'와 'Store Cost'는 달러로 환산하지 않는다.\n• 열 순서는 아래 목표 결과와 같아야 한다. 행은 'City', 'Country', 'Zip Code' 순으로 오름차순 정렬한다.\n목표 결과 | 전체 10행 × 7열\nCity\nCountry\nZip Code\nStore Cost\nStore Potential\nSales\nCurrency\nValue in\nUSD\nMiami\nUnited States\nZ-33129\n845221\n1704687\nUSD\n1.0\nMiami\nUnited States\nZ-33137\n1644087\n1938794\nUSD\n1.0\nMiami\nUnited States\nZ-33146\n1322850\n1726117\nUSD\n1.0\nMonterrey\nMexico\nZ-64010\n10564852\n25705177\nMXN\n19.52\nMonterrey\nMexico\nZ-64050\n17047647\n29136401\nMXN\n19.52\nNew York\nUnited States\nZ-10001\n1472772\n1480847\nUSD\n1.0\nNew York\nUnited States\nZ-10003\n917761\n1903942\nUSD\n1.0\nNew York\nUnited States\nZ-10013\n1000360\n2600607\nUSD\n1.0\nSan Francisco\nUnited States\nZ-94016\n1227024\n1866261\nUSD\n1.0\nSan Francisco\nUnited States\nZ-94119\n933222\n1478530\nUSD\n1.0\n해외 매장 입지 후보 정리"
+    },
+    "PILOT4-T03": {
+      "page": 3,
+      "image": "t03.png",
+      "text": "참가자용 과제 안내\nT03\n3 / 4\n견과류 판매팀에서 지역별 총매출과 평균 팩당 가격을 집계합니다.\n입력: input_01.csv(지역·품목·항목별 판매 자료)\n'Location'은 지역, 'Nut Type'은 품목, 'Category'는 측정 항목, 'Value'는 해당 값이다.\n처리 조건\n• 'Location'은 앞뒤 공백을 제거하고 대소문자를 통일한다. 숫자 0은 문자 o로, 3은 e로 바꾼다.\n• Londen은 London으로, Liverpoo와 Livrepool은 Liverpool로 통합한다. 최종 'Location'은 단어의 첫 글자\n만 대문자로 표기한다.\n• 'Location' 정리 후 'Location'·'Nut Type'·'Category'가 같은 기록은 입력에서 처음 나온 값만 사용한다.\n• 같은 'Location'·'Nut Type'의 'Category'별 값을 모으며, 'Value'는 수치로 계산한다.\n• 품목별 매출 = 'Price (£) per pack' × 'Quant per Q'.\n• 'Location'별 'Revenue' = 같은 'Location'의 품목별 매출 합계.\n• 'Avg. Price (£) per pack' = 같은 'Location'의 'Price (£) per pack'의 단순 평균. 'Quant per Q'에 따른 가중\n치는 적용하지 않는다.\n• 'Avg. Price (£) per pack'은 소수 둘째 자리까지 반올림한다.\n• 출력 열은 'Location', 'Revenue', 'Avg. Price (£) per pack' 순서이다. 행은 'Location' 오름차순으로 정렬한\n다.\n목표 결과 | 전체 3행 × 3열\nLocation\nRevenue\nAvg. Price (£) per pack\nLiverpool\n6150.4\n7.72\nLondon\n28155.9\n10.15\nManchester\n7804.5\n5.31\n지역별 견과류 판매 실적 집계"
+    },
+    "PILOT4-T07": {
+      "page": 4,
+      "image": "t07.png",
+      "text": "참가자용 과제 안내\nT07\n4 / 4\n학술대회 운영팀에서 캐나다 국적 직원이 참석하는 대회 목록을 정리합니다.\n입력 자료\n• input_01.csv: 대회 정보. 'conf'는 대회 이름이며, 'attr' = Conference_ID인 행의 'value'가 대회 ID이다.\n• input_02.csv: 직원 정보. 숫자 열 머리글은 직원 ID이며, 'Nationality' 행은 직원별 국적이다.\n• input_03.csv: 참석 기록. 'conference_staff'의 형식은 대회 ID-직원 ID이다.\n처리 조건\n• 직원의 'Nationality'는 Canada와 정확히 일치해야 한다.\n• 해당 직원이 한 명 이상 참석하는 대회만 포함한다.\n• Speaker, Sponsor, Participant 등 모든 역할을 참석으로 인정한다.\n• 'conf'는 앞뒤 공백을 제거하고 대문자로 표기한다.\n• 같은 'Conference_Name'은 한 번만 출력한다.\n• 출력 열은 'Conference_Name' 하나이다. 행은 'Conference_Name' 오름차순으로 정렬한다.\n목표 결과 | 전체 1행 × 1열\nConference_Name\nACL\n캐나다 국적 직원의 학술대회 참석 목록"
+    }
+  }
+}

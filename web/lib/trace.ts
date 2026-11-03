@@ -8,6 +8,7 @@ export { useTableDrag } from "../../src/useTableDrag";
 export { PythonCode, sourceSnippet } from "../components/trace/python-code";
 
 import type { CellValue, Run, Session, Stage, Table } from "../../src/types";
+import { studyHeaders, newEventId } from "./study-telemetry";
 
 export type TaskSummary = { id: string; title: string; review_number?: number | null };
 export type TaskInput = TaskSummary & {
@@ -24,7 +25,8 @@ export const researchView = () =>
 
 const explanationsReady = (run: Run) =>
   run.explanation_status === "ready" &&
-  run.observed_change_links?.version === "observed-change-links-v1" &&
+  run.explanation_meta?.prompt_version === "observed-diff-korean-prose-v8" &&
+  run.observed_change_links?.version === "observed-change-links-v2" &&
   run.stages
     .slice(1)
     .every(
@@ -50,6 +52,8 @@ export async function api<T>(path: string, body?: unknown, options = { explain: 
   const headers = {
     "Content-Type": "application/json",
     "X-Trace-View": researchView() ? "researcher" : "participant",
+    "X-Request-Id": newEventId(),
+    ...studyHeaders(),
   };
   const res = await fetch(
     "/api" + path,
@@ -59,7 +63,9 @@ export async function api<T>(path: string, body?: unknown, options = { explain: 
   let data = await res.json();
   const isSession =
     data?.run && Array.isArray(data.runs) && ["ex", "in-situ"].includes(data.condition);
-  if (options.explain && isSession && !["native-statements-v3", "unavailable-v3"].includes(data.run.execution_observations_version) && !path.endsWith("/execution-observations")) {
+  const needsObservations = isSession && (!["native-statements-v7", "unavailable-v7"].includes(data.run.execution_observations_version)
+    || data.run.pipeline?.engine === "python" && !["native-table-calls-v1", "unavailable-table-calls-v1"].includes(data.run.direct_table_observations_version));
+  if (options.explain && needsObservations && !path.endsWith("/execution-observations")) {
     try {
       const observed = await fetch(`/api/sessions/${data.id}/execution-observations`, {
         method: "POST", headers, body: JSON.stringify({ run_id: data.run.id }),

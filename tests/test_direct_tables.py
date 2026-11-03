@@ -69,3 +69,56 @@ def test_concat_shows_each_additional_input_once_with_direction():
     assert len(run['stages'][1]['direct_tables'])==1
     assert run['stages'][1]['direct_tables'][0]['name']=='extra'
     assert '행' in run['stages'][1]['direct_tables'][0]['uses'][0]['text']
+
+
+def test_native_loop_merges_keep_each_actual_operand_snapshot():
+    code="result = input_df[['key']].copy()\nfor field in ['rate', 'double']:\n    lookup = tables['rates'].rename(columns={'rate': field})\n    result = result.merge(lookup, on='key', how='left')"
+    run=execute(code);stage=run['stages'][1]
+    assert [item['table']['columns'] for item in stage['direct_tables']]==[['key','rate'],['key','double']]
+    assert all(item['uses'][0]['line']==4 for item in stage['direct_tables'])
+    assert all(item['name']=='lookup' for item in stage['direct_tables'])
+    assert len(stage['direct_table_calls'])==2
+    assert run['direct_table_observations_version']=='native-table-calls-v1'
+
+
+def test_native_calls_exclude_dead_loop_branches_overwritten_results_and_unchanged_later_steps():
+    code="result = input_df.copy()\nfor field in ['rate']:\n    unused = input_df.merge(tables['unused'], on='key')\n    result = result.merge(tables['rates'], on='key', how='left')\n    if False:\n        result = result.merge(tables['unused'], on='key')\nresult = result.sort_values('key')"
+    groups=[{'statement_indices':[0,1],'output_variable':'result'},{'statement_indices':[2],'output_variable':'result'}]
+    run=execute(code,groups)
+    assert [item['name'] for item in run['stages'][1]['direct_tables']]==['rates']
+    assert run['stages'][2]['direct_tables']==[]
+    overwritten=execute("result = input_df.merge(tables['rates'], on='key')\nresult = input_df.copy()")
+    assert overwritten['stages'][1]['direct_tables']==[]
+    replaced=execute("result = input_df.merge(tables['rates'], on='key')\nif True:\n    result = input_df.copy()")
+    assert replaced['stages'][1]['direct_tables']==[]
+
+
+def test_distinct_same_line_calls_are_not_cross_connected_and_failed_calls_are_not_displayed():
+    code="unused = input_df.merge(tables['unused'], on='key'); result = input_df.merge(tables['rates'], on='key')"
+    assert [item['name'] for item in execute(code)['stages'][1]['direct_tables']]==['rates']
+    failed=execute("try:\n    result = input_df.merge(tables['rates'], on='missing')\nexcept KeyError:\n    result = input_df.copy()")
+    assert failed['stages'][1]['direct_table_calls']==[] and failed['stages'][1]['direct_tables']==[]
+
+
+def test_concat_does_not_consume_a_generator_twice_or_change_native_result():
+    run=execute("frames = (frame for frame in [input_df[['key']], tables['rates'][['key']]])\nresult = pd.concat(frames, ignore_index=True)")
+    assert len(run['stages'][1]['table']['rows'])==4
+
+
+def test_concat_collection_uses_actual_selected_keys_and_readable_operand_names():
+    run=execute("parts = {'unused': tables['unused'][['key']], 'main': input_df[['key']], 'rates': tables['rates'][['key']]}\nresult = pd.concat(parts, keys=['main','rates'])")
+    items=run['stages'][1]['direct_tables']
+    assert [item['name'] for item in items]==["parts['rates']"]
+    assert len(items[0]['table']['rows'])==2
+
+
+def test_replay_ids_do_not_duplicate_plain_auxiliary_cards():
+    run=execute("result = input_df.merge(tables['rates'], on='key')")
+    stage=run['stages'][1]
+    stage['direct_table_calls']=[]
+    records=[record for record in stage['operation_observations'] if record['kind']=='merge']
+    duplicate=deepcopy(records[0]);duplicate['id']='other-replay'
+    for row in duplicate['inputs'][1]['table']['rows']:row['id']='other:'+row['id']
+    stage['operation_observations'].append(duplicate)
+    annotate_run(run)
+    assert len(stage['direct_tables'])==1

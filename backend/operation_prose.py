@@ -6,6 +6,7 @@ import re
 def operation_local_text(text,transform,columns):
     """A description cannot borrow named fields/actions from other operations."""
     code=transform['code']
+    if re.search(r'코드에\s*지정(?:된|한)\s*계산\s*결과|계산 결과을',text):return False
     allowed=set(transform.get('output_columns',[])+transform.get('input_columns',[])+transform.get('removed_columns',[]))
     try:tree=ast.parse(code)
     except SyntaxError:tree=None

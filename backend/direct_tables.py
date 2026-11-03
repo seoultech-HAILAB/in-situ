@@ -1,11 +1,14 @@
 """Auxiliary tables consumed by an executed operation in this Step only.
 
 Do not walk source lineage, parent Steps or conservative dependency lists.
-Unknown/common records cannot establish an actual multi-table use.
+Conservative whole-Step inputs alone cannot establish actual multi-table use.
+Native call snapshots can establish it even when detailed replay is unavailable.
 """
 import ast
 import hashlib
 import json
+
+from .table_call_observations import contributing_calls, VERSION as TABLE_CALLS_VERSION
 
 
 def expression(run,op):
@@ -69,11 +72,25 @@ def collect(run,stage):
     external_names.update(n.id for node in earlier for n in ast.walk(node) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Store))
     records=[op for op in operations if op['id'] in live]
     records.extend(op for op in stage.get('operation_observations',[]) if op.get('statement_index') in contributing)
+    spec=next((s for s in run.get('pipeline',{}).get('steps',[]) if s['id']==stage['id']),None)
+    tree=ast.parse(run['code'])
+    indices=spec['statement_indices'] if spec else [i for i,node in enumerate(tree.body) if (stage.get('code_location') or {}).get('start',0)<=node.lineno<=(stage.get('code_location') or {}).get('end',0)]
+    output=stage.get('output_variable') or (spec or {}).get('observed_output_variable') or (spec or {}).get('output_variable')
+    executed={line for op in stage.get('executed_statements',[]) for line in op.get('executed_lines',[])}
+    calls=contributing_calls([tree.body[i] for i in indices],output,executed or None)
+    def site(op):
+        loc=op.get('expression_location') or op.get('code_location') or {}
+        return (loc.get('start'),loc.get('end'),loc.get('start_column'),loc.get('end_column'))
+    native=[op for op in stage.get('direct_table_calls',[]) if (node:=expression(run,op)) is not None and op.get('code')==ast.get_source_segment(run['code'],node)]
+    native_sites={site(op) for op in native}
+    # Actual calls are authoritative for these sites, including calls which a
+    # loop replay could not describe. A dead call must not reappear via replay.
+    records=[op for op in native if site(op) in calls]+[op for op in records if site(op) not in native_sites]
     for op in records:
         if any(op.get(key) is not None and op[key]!=run.get(key) for key in ('execution_version','code_version')):continue
         inputs=op.get('inputs',[])
-        # These records are produced by successful, native-verified detailed
-        # replay. A whole-Step Python input list is only a conservative guess.
+        # Successful native calls and verified detailed replay provide actual
+        # operands. A whole-Step Python input list is only a conservative guess.
         if len(inputs)<2 or op['kind'] not in ('merge','join','concat','derive','filter'):continue
         node=expression(run,op)
         names={n.id for n in ast.walk(node) if isinstance(n,ast.Name)} if node else set()
@@ -94,9 +111,15 @@ def collect(run,stage):
                     if isinstance(node.func,ast.Attribute) and isinstance(node.func.value,ast.Name) and node.func.value.id in ('pd','pandas'):
                         operand=node.args[index] if len(node.args)>index else next((kw.value for kw in node.keywords if kw.arg=='right'),None)
                     else:operand=node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg in ('right','other')),None)
-                elif op['kind']=='concat' and node.args and isinstance(node.args[0],(ast.List,ast.Tuple)) and len(node.args[0].elts)>index:operand=node.args[0].elts[index]
+                elif op['kind']=='concat' and node.args:
+                    if isinstance(node.args[0],(ast.List,ast.Tuple)) and len(node.args[0].elts)>index:operand=node.args[0].elts[index]
+                    elif isinstance(node.args[0],ast.Name):
+                        name=f"{node.args[0].id}[{item['operand_key']!r}]" if 'operand_key' in item else node.args[0].id
             name=label(operand,name)
-            signature=json.dumps([name,item['table']],ensure_ascii=False,sort_keys=True)
+            displayed=item['table']
+            # Row IDs are tracing internals, not a distinct plain-table view.
+            signature=json.dumps([name,displayed['columns'],[row['values'] for row in displayed['rows']],
+                                  {c:displayed['stats']['fields'][c]['dtype'] for c in displayed['columns']}],ensure_ascii=False,sort_keys=True)
             identity=hashlib.sha256(signature.encode()).hexdigest()[:16]
             usage={'text':description(op,node),'line':(op.get('expression_location') or op.get('code_location') or {}).get('start')}
             if identity in seen:
@@ -110,3 +133,5 @@ def collect(run,stage):
 
 def annotate(run):
     for stage in run.get('stages',[])[1:]:stage['direct_tables']=collect(run,stage)
+    if run.get('stages',[])[1:] and all(stage.get('direct_table_observations_version')==TABLE_CALLS_VERSION for stage in run['stages'][1:]):
+        run['direct_table_observations_version']=TABLE_CALLS_VERSION

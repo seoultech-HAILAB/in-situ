@@ -161,9 +161,41 @@ def test_saved_run_gets_observations_without_replacing_execution_code_or_tables(
     result=response.json();run=result['run']
     assert run['id']==base['id'] and run['code_version']==base['code_version'] and run['code']==base['code']
     assert len(result['runs'])==1 and run['stages'][1]['table']==base['stages'][1]['table']
-    assert run['execution_observations_version']=='native-statements-v3'
+    assert run['execution_observations_version']=='native-statements-v7'
     assert run['stages'][1]['row_correspondence_complete']
     assert any(item['removed_columns']==['y'] for item in run['stages'][1]['transformations'])
+
+
+def test_direct_table_upgrade_preserves_existing_explanations_and_run_history(tmp_path,monkeypatch):
+    from backend import explanations
+    monkeypatch.setattr(server,'STORE',tmp_path)
+    session=server.create(server.Tables(input_csv='key\na\nb',target_csv='key,rate\na,2\nb,3',sources={'rates':'key,rate\na,2\nb,3'},execution_engine='python',condition='in-situ'))
+    session.pop('run',None)
+    code="result = input_df.copy()\nfor column in ['rate']:\n    lookup = tables['rates'].copy()\n    result = result.merge(lookup, on='key', how='left')"
+    server.execute(session,code,[],'research',groups=[{'statement_indices':[0,1],'output_variable':'result'}])
+    current=server.current(session)
+    current.update(explanation_status='ready',explanation_meta={'prompt_version':explanations.PROMPT_VERSION,'model':'preserved-test'})
+    current['stages'][1]['nl_explanation']={'text':'기존 설명을 유지합니다.','title':'기존 제목','source':'llm'}
+    def remove_calls(value):
+        if isinstance(value,dict):
+            for key in list(value):
+                if key.startswith('direct_table_'):value.pop(key)
+                else:remove_calls(value[key])
+        elif isinstance(value,list):
+            for item in value:remove_calls(item)
+    remove_calls(session);server.save(session)
+    baseline=deepcopy(current);fingerprint=explanations.fingerprint(current)
+    client=TestClient(server.app)
+    response=client.post(f"/api/sessions/{session['id']}/execution-observations",json={'run_id':current['id']})
+    assert response.status_code==200,response.text
+    result=response.json();upgraded=result['run']
+    assert upgraded['id']==baseline['id'] and upgraded['code']==baseline['code'] and len(result['runs'])==1
+    assert [s['table'] for s in upgraded['stages']]==[s['table'] for s in baseline['stages']]
+    assert upgraded['explanation_status']=='ready' and upgraded['explanation_meta']==baseline['explanation_meta']
+    assert upgraded['stages'][1]['nl_explanation']==baseline['stages'][1]['nl_explanation']
+    assert explanations.fingerprint(upgraded)==fingerprint
+    assert upgraded['direct_table_observations_version']=='native-table-calls-v1'
+    assert len(upgraded['stages'][1]['direct_tables'])==1
 
 
 def test_changed_or_failed_reobservation_preserves_saved_run(stored,monkeypatch):

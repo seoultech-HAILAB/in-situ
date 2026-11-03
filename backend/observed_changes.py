@@ -12,8 +12,9 @@ import json
 from .transformation_effects import effects, contains
 from .statement_observations import location
 from .operation_prose import operation_local_text
+from .construction_observations import construction_bindings, compatible_fallback, key as node_key
 
-VERSION='observed-change-links-v1'
+VERSION='observed-change-links-v2'
 
 
 def digest(value):
@@ -108,13 +109,20 @@ def stage_contract(run,stage,step_no,tree):
         else:event['cells'][kind]={c:[r for r in values if r in rows] for c,values in observed['cells'][kind].items()}
         net.append({'axis':'rows','kind':kind,'column':None,'effect':event})
     observations=[*stage.get('operations',[]),*stage.get('operation_observations',[])]
-    executed={line for op in observations for line in op.get('executed_lines',[])}
+    executed={line for op in [*observations,*stage.get('executed_statements',[])] for line in op.get('executed_lines',[])}
     spec=next((spec for spec in run.get('pipeline',{}).get('steps',[]) if spec['id']==stage['id']),None)
     indices=spec['statement_indices'] if spec else [i for i,node in enumerate(tree.body) if contains(stage.get('code_location'),location(node))]
+    source_items=[item for item in stage.get('transformations',[]) if item.get('method')!='observed_change']
+    contributing={item['statement_index'] for item in source_items if item.get('contributes_to_output') is not False}
+    unrelated={item['statement_index'] for item in source_items if item.get('contributes_to_output') is False}-contributing
+    construction=construction_bindings([(index,tree.body[index]) for index in indices],observations,executed,contributing)
+    construction_producers=set().union(*(positions for fields in construction.values() for positions in fields.values()))
     candidates=[]
+    candidate_nodes={}
     for index in indices:
         for node in ast.walk(tree.body[index]):
             if not isinstance(node,(ast.Assign,ast.AnnAssign,ast.AugAssign,ast.Delete,ast.Expr)):continue
+            if index in unrelated and node_key(node) not in construction_producers:continue
             loc=location(node)
             if executed and node.lineno not in executed:continue
             if not executed and not any(contains(loc,op.get('expression_location') or op.get('code_location')) for op in observations):continue
@@ -131,6 +139,7 @@ def stage_contract(run,stage,step_no,tree):
                     effect['rows']={k:[] for k in effect['rows']}
                 candidate['evidence'].append(remap(effect,stage.get('observation_row_aliases',{}) if op.get('observation_scope') else {}))
             candidates.append(candidate)
+            candidate_nodes[candidate['id']]=node
     # Row IDs are local execution identifiers. The model sees numbered examples;
     # effects retain IDs only on the server and are rebuilt when applying links.
     old={r['id']:(i+1,r) for i,r in enumerate(before['rows'])}
@@ -145,8 +154,31 @@ def stage_contract(run,stage,step_no,tree):
             matching=[intersect(event['effect'],effect) for effect in evidence]
             matching=[effect for effect in matching if tokens(effect)]
             if matching:event['candidate_effects'][candidate['id']]=matching
-        event['candidate_ids']=list(event['candidate_effects']) or [candidate['id'] for candidate in candidates]
-        event['code_evidence']='executed-effect' if event['candidate_effects'] else 'executed-step-only'
+        # A real schema write to the observed output is stronger than a broad
+        # Step association. Dynamic loop column names are runtime values here.
+        if not event['candidate_effects'] and event['column']:
+            for candidate in candidates:
+                site=candidate['code_location']
+                writes=[write for write in stage.get('statement_schema_effects',[])
+                        if write['code_location']==site and write['output_variable'] in stage.get('output_bindings',[])
+                        and event['column'] in write.get(event['kind'],[])]
+                if writes:event['candidate_effects'][candidate['id']]=[deepcopy(event['effect'])]
+        origins=stage.get('schema_origins',{}).get(event['kind'],{}).get(event['column'],[]) if event['axis']=='column' and event['kind'] in ('added','changed','removed') else []
+        origin_candidates=[candidate for candidate in candidates if candidate['code_location'] in origins]
+        if origin_candidates:
+            event['candidate_effects']={candidate['id']:[deepcopy(event['effect'])] for candidate in origin_candidates}
+        # Constructor field positions identify local calculations, even when
+        # the calculation itself produces a scalar rather than a DataFrame.
+        producers=set().union(*(fields[event['column']] for fields in construction.values() if event['column'] in fields)) if event['kind']=='added' else set()
+        bound=[candidate for candidate in candidates if node_key(candidate_nodes[candidate['id']]) in producers]
+        if bound:
+            event['candidate_effects']={candidate['id']:[deepcopy(event['effect'])] for candidate in bound}
+            event['candidate_ids']=list(event['candidate_effects'])
+            event['code_evidence']='executed-construction'
+        else:
+            event['candidate_ids']=list(event['candidate_effects']) or [candidate['id'] for candidate in candidates
+                if compatible_fallback(candidate_nodes[candidate['id']],event,construction)]
+            event['code_evidence']='executed-effect' if event['candidate_effects'] else 'executed-step-only'
         ids=list(dict.fromkeys([r for rows in event['effect']['rows'].values() for r in rows]+[r for cols in event['effect']['cells'].values() for rows in cols.values() for r in rows]))
         examples=[]
         for row_id in ids[:4]:

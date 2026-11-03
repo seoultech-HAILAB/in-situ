@@ -28,10 +28,11 @@ def workspace(tmp_path, monkeypatch):
     class Generator:
         changes = None
         scope = None
+        assumptions = []
 
         def generate(self, *args):
             calls.append(args[-1])
-            return Proposal(base_run_id=base['id'], revision_scope=self.scope,
+            return Proposal(base_run_id=base['id'], revision_scope=self.scope, assumptions=self.assumptions,
                             changes=self.changes or [{'action': 'replace', 'step_id': target,
                                                       'code': "second = first.assign(y=first['x'] * 3)"}])
 
@@ -99,6 +100,7 @@ def test_downstream_is_not_run_until_approval_and_failure_is_atomic(workspace):
     approved = client.post(decision + '/approve').json()
     assert approved['run']['id'] == base['id'] and len(approved['runs']) == 1
     assert approved['pending_revision']['status'] == 'ready'
+    assert not approved.get('revision_history')
     assert '전체 파이프라인 실행 실패' in approved['pending_revision']['error']
     denied = client.post(decision + '/deny').json()
     assert denied['run']['id'] == base['id'] and denied['pending_revision'] is None
@@ -252,3 +254,31 @@ def test_selected_transformation_context_is_passed_to_scope_inference(workspace)
     assert session['pending_revision']['scope'] == 'transformation'
     assert calls[0]['selected_transformation']['id'] == selected['id']
     assert 'source_context' not in calls[0]['selected_transformation']
+
+
+@pytest.mark.parametrize('condition', ['in-situ', 'ex'])
+def test_chat_review_prose_survives_both_decisions_and_reload(workspace, condition):
+    client, url, _, base, generator, *_ = workspace
+    client.post(url + '/condition', json={'condition': condition})
+    generator.assumptions = ['x 값에 3을 곱해 y를 계산합니다.', '다른 Step의 코드는 유지합니다.']
+    expected = []
+    for action, status in [('deny', 'denied'), ('approve', 'approved')]:
+        session, decision = propose(workspace)
+        preview = session['pending_revision']
+        decided = client.post(decision + '/' + action).json()
+        entry = decided['revision_history'][-1]
+        assert entry['id'] == preview['id'] and entry['label'] == 'Step 2a'
+        assert entry['request'] == preview['request']
+        assert entry['assumptions'] == preview['assumptions'] == generator.assumptions
+        assert entry['status'] == status and entry['decided_at']
+        assert set(entry).isdisjoint({'plan', 'preview_run', 'stage', 'step_code'})
+        if action == 'approve':
+            assert entry['run_id'] == decided['run']['id']
+        else:
+            assert decided['run']['id'] == base['id'] and 'run_id' not in entry
+        expected.append(entry)
+        assert decided['pending_revision'] is None
+        assert client.get(url).json()['revision_history'] == expected
+        assert server.participant_view(client.get(url).json())['revision_history'] == expected
+        assert client.post(decision + '/' + action).status_code == 409
+        assert client.get(url).json()['revision_history'] == expected

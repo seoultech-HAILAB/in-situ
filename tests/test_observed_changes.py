@@ -127,6 +127,8 @@ def test_step_only_attribution_is_explicitly_a_candidate_and_targets_are_server_
     run=execute("result = input_df.copy()\nresult['new'] = result['x'] * 3")
     for stage in run['stages'][1:]:
         stage['operations']=[]
+        stage['statement_schema_effects']=[]
+        stage['schema_origins']={}
         stage['operation_observations']=[dict(op,kind='observed',code_location=stage['code_location'],expression_location=None) for op in stage['operation_observations']]
     contract=changes.public_contracts(run)[0]
     assert contract['changes'][0]['code_evidence']=='executed-step-only'
@@ -147,6 +149,45 @@ def test_bounded_model_context_excludes_target_requirements_and_unrelated_values
     payload=json.dumps(explanations.model_context(run))
     assert all(value not in payload for value in ('SECRET_TARGET','SECRET_REQUIREMENT','SECRET_EVALUATION','PRIVATE_UNRELATED_NOTE'))
     assert 'observed_changes' in payload and '"new": 3' in payload
+
+
+@pytest.mark.parametrize('valid',[True,False])
+def test_missing_change_links_are_repaired_by_reference_without_replacing_valid_links(monkeypatch,valid):
+    run=execute("result = input_df.copy()\nresult['new'] = result['x'] * 3\nresult = result[['x','new']]")
+    proposed=links(run);assert len(proposed)>=2
+    raw={'change_links':deepcopy(proposed[:-1]),'transformations':[{'keep':'unchanged'}]}
+    original=deepcopy(raw);calls=[]
+    def post(self,url,headers,json):
+        calls.append(json)
+        targets=__import__('json').loads(json['input'])
+        assert len(targets)==1 and targets[0]['id']==proposed[-1]['change_id']
+        chosen=targets[0]['candidate_ids'][0] if valid else 'unrelated-code'
+        data={'change_links':[{'change_ref':targets[0]['change_ref'],'status':'linked',
+            'operations':[{'candidate_id':chosen,'text':'지정한 열을 제외합니다.'}]}]}
+        return httpx.Response(200,json={'status':'completed','output':[{'content':[{'type':'output_text','text':__import__('json').dumps(data)}]}]})
+    monkeypatch.setattr(httpx.Client,'post',post)
+    if valid:
+        repair=explanations.repair_change_link_targets(run,raw,'test-key')
+        assert repair['count']==1 and raw['change_links'][:-1]==original['change_links']
+        changes.validate(run,raw['change_links'])
+    else:
+        with pytest.raises(ValueError,match='실행 코드 후보 밖'):
+            explanations.repair_change_link_targets(run,raw,'test-key')
+        assert raw==original
+    assert len(calls)==1 and raw['transformations']==original['transformations']
+
+
+def test_no_executed_candidate_stays_unresolved_without_inventing_code(monkeypatch):
+    run=execute("result = input_df.copy()\nresult['new'] = result['x'] * 3")
+    stage=run['stages'][1]
+    stage.update(operations=[],operation_observations=[],executed_statements=[],statement_schema_effects=[],schema_origins={})
+    contract=changes.public_contracts(run)[0]
+    assert all(not event['candidate_ids'] for event in contract['changes'])
+    raw={'change_links':[{'step_no':1,'change_id':event['id'],'status':'linked','operations':[]} for event in contract['changes']]}
+    def forbidden(*args,**kwargs):raise AssertionError('No executed code must remain unresolved')
+    monkeypatch.setattr(httpx.Client,'post',forbidden)
+    explanations.repair_change_link_targets(run,raw,'unused')
+    assert all(link['status']=='unresolved' and not link['operations'] for link in raw['change_links'])
 
 
 @pytest.mark.parametrize('repair_succeeds',[True,False])

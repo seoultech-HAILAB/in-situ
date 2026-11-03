@@ -14,6 +14,16 @@ function stage(input, output, extra = {}) {
   return { id: 'step', kind: 'derive', trace_level: 'detailed', code: 'result = input_df.copy()', params: {}, input, table: output, ...extra };
 }
 
+test('verified grouped calculations highlight their column without invented row or cell pairs', () => {
+  const input=table(['Location','Revenue'],[['a',{Location:'A',Revenue:2}],['b',{Location:'A',Revenue:3}]]);
+  const output=table(['Location','Revenue'],[['group-a',{Location:'A',Revenue:5}]]);
+  const selected=stage(input,output,{kind:'python',trace_level:'common',schema_origins:{changed:{Revenue:[{start:30,end:32}]}}});
+  const diff=workspaceDiff(selected);
+  assert.equal(diff.columns.find(c=>c.name==='Revenue').kind,'changed');
+  assert.equal(diff.rowCorrespondenceKnown,false);
+  assert.ok(diff.rows.every(row=>!row.kind&&!row.cells.Revenue.kind));
+});
+
 test('additions, edits, deleted rows and dropped columns coexist without mutating the executed table', () => {
   const input = table(['x', 'old'], [['a', {x:1, old:9}], ['b', {x:2, old:8}], ['c', {x:3, old:7}]]);
   const output = table(['x', 'new'], [['a', {x:10, new:5}], ['c', {x:3, new:6}], ['d', {x:4, new:7}]]);
