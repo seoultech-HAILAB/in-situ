@@ -83,11 +83,13 @@ def test_null_fill_and_clear_record_different_actual_change_types():
     assert removed['columns']['removed']==[]
 
 
-def test_composite_common_observation_cannot_prove_unexecuted_or_individual_changes():
+def test_common_step_observes_executed_statements_without_claiming_unexecuted_branches():
     run=snapshot("result = input_df.copy()\nif False:\n    result = result[['x']]\nresult['x'] = result['x'].apply(lambda value: value * 2)")
     assert run['stages'][1]['trace_level']=='common'
-    assert all(not item['execution_effects'] for item in run['stages'][1]['transformations'])
-    assert all(item['syntax_only'] for item in run['stages'][1]['transformations'])
+    selection=next(item for item in run['stages'][1]['transformations'] if item['method']=='select')
+    applied=next(item for item in run['stages'][1]['transformations'] if item['method']=='apply')
+    assert not selection['execution_effects'] and selection['syntax_only']
+    assert applied['execution_effects'][0]['columns']['changed']==['x']
     assert 'y' in run['stages'][1]['table']['columns']
 
 
@@ -97,7 +99,11 @@ def test_chained_series_methods_without_individual_observations_do_not_claim_eac
     assert all(not item['execution_effects'] for item in run['stages'][1]['transformations'])
     for value in ("result['x'].astype(str).str.strip()", "result['x'].astype(float) * 2"):
         assignment=snapshot("result = input_df.copy()\nresult['x'] = " + value)
-        assert all(not item['execution_effects'] for item in assignment['stages'][1]['transformations'])
+        items=assignment['stages'][1]['transformations']
+        assert all(not item['execution_effects'] for item in items if item['method']!='assignment')
+        actual=next(item for item in items if item['method']=='assignment')
+        assert actual['code']=="result['x'] = " + value
+        assert actual['execution_effects']
 
 
 def test_revision_comparison_is_separate_from_actual_operation_input_changes():

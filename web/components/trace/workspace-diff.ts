@@ -3,10 +3,10 @@ import type { CellValue, Row, Stage, Table, OperationEffects } from "../../../sr
 export type ChangeKind = "added" | "changed" | "removed";
 export type DiffColumn = { name: string; kind?: ChangeKind };
 export type DiffCell = { value: CellValue | undefined; before?: CellValue; after?: CellValue; kind?: ChangeKind };
-export type DiffRow = { key: string; id: string; number: number; kind?: ChangeKind; cells: Record<string, DiffCell> };
-export type WorkspaceDiff = { columns: DiffColumn[]; rows: DiffRow[]; before: Table | null; removedRows: number; removedColumns: number };
+export type DiffRow = { key: string; id: string; beforeId?: string; observation?: "before" | "after"; number: number; kind?: ChangeKind; cells: Record<string, DiffCell> };
+export type WorkspaceDiff = { columns: DiffColumn[]; rows: DiffRow[]; before: Table | null; rowCorrespondenceKnown: boolean; removedRows: number; removedColumns: number };
 export type ChangeTarget = { kind: ChangeKind; row?: DiffRow; column?: string; cell?: DiffCell; revision?: boolean };
-export type Transformation = { id?: string; code: string; text: string; focus?: string; source?: string; outputColumns?: string[]; candidates?: boolean; line?: { start: number; end: number; start_column?: number; end_column?: number; start_character?: number } };
+export type Transformation = { id?: string; code: string; text: string; focus?: string; source?: string; outputColumns?: string[]; candidates?: boolean; mapping?: "candidate" | "matched"; line?: { start: number; end: number; start_column?: number; end_column?: number; start_character?: number } };
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const owns = (row: Row | undefined, column: string) => !!row && Object.hasOwn(row.values, column);
@@ -29,7 +29,7 @@ export function comparisonInput(stage: Stage): Table | null {
   // A Step may also prepare a side table. Compare its output with the main
   // consumed table, rather than an unrelated first operation's table.
   const candidates = [stage.input, ...(stage.inputs || []).map(item => item.table)].filter((t): t is Table => !!t);
-  const ids = new Set(stage.table.rows.map(row => row.id));
+  const ids = new Set(stage.row_correspondence_complete ? Object.values(stage.row_correspondence || {}) : stage.table.rows.map(row => row.id));
   const score = (table: Table) => [table.rows.filter(row => ids.has(row.id)).length, table.columns.filter(c => stage.table.columns.includes(c)).length];
   return candidates.reduce<Table | null>((best, table) => {
     if (!best) return table;
@@ -40,9 +40,8 @@ export function comparisonInput(stage: Stage): Table | null {
 
 export function workspaceDiff(stage: Stage, comparison?: Table): WorkspaceDiff {
   const before = comparison ?? comparisonInput(stage), after = stage.table;
-  if (!before) return { before, columns: after.columns.map(name => ({ name })), rows: after.rows.map((row, i) => ({ key: row.id, id: row.id, number: i + 1, cells: Object.fromEntries(after.columns.map(c => [c, { value: row.values[c] }])) })), removedRows: 0, removedColumns: 0 };
+  if (!before) return { before, rowCorrespondenceKnown: false, columns: after.columns.map(name => ({ name })), rows: after.rows.map((row, i) => ({ key: row.id, id: row.id, number: i + 1, cells: Object.fromEntries(after.columns.map(c => [c, { value: row.values[c] }])) })), removedRows: 0, removedColumns: 0 };
   const oldRows = new Map(before.rows.map((row, i) => [row.id, { row, number: i + 1 }]));
-  const outputIds = new Set(after.rows.map(row => row.id));
   const oldColumns = new Set(before.columns), outputColumns = new Set(after.columns);
   const columns: DiffColumn[] = withDeleted(after.columns, before.columns, c => c).map(name => ({ name,
     kind: !outputColumns.has(name) ? "removed" : !oldColumns.has(name) ? "added" : undefined }));
@@ -50,16 +49,20 @@ export function workspaceDiff(stage: Stage, comparison?: Table): WorkspaceDiff {
   // unrelated rows by their position, coincidentally equal IDs, or cell values.
   const preserving = new Set(["filter", "derive", "select", "drop", "rename", "sort_values", "astype", "fillna", "dropna", "drop_duplicates", "replace", "reset_index", "copy", "head", "tail"]);
   const members = stage.operations?.length ? stage.operations : [stage];
-  const hasIdentity = (stage.trace_level === "detailed" || stage.trace_level === "partial") && members.every(op => preserving.has(op.kind));
-  const matched = (id: string) => hasIdentity ? oldRows.get(id) : undefined;
+  const correspondence = comparison ? stage.revision_row_correspondence : stage.row_correspondence;
+  const complete = comparison ? stage.revision_row_correspondence_complete : stage.row_correspondence_complete;
+  const hasIdentity = !!complete || (stage.trace_level === "detailed" || stage.trace_level === "partial") && members.every(op => preserving.has(op.kind));
+  const beforeId = (id: string) => complete ? correspondence?.[id] : hasIdentity ? id : undefined;
+  const matched = (id: string) => oldRows.get(beforeId(id) ?? "");
+  const outputIds = new Set(after.rows.map(row => beforeId(row.id)).filter((id): id is string => id !== undefined));
   const changedColumns = new Set<string>();
   for (const column of columns) if (!column.kind && before.stats.fields[column.name]?.dtype !== after.stats.fields[column.name]?.dtype) changedColumns.add(column.name);
   const retypedColumns = new Set(changedColumns);
   const oldOrder = before.columns.filter(c => outputColumns.has(c)), newOrder = after.columns.filter(c => oldColumns.has(c));
   newOrder.forEach((column, i) => { if (oldOrder[i] !== column) changedColumns.add(column); });
   const survivingBefore = before.rows.filter(row => outputIds.has(row.id));
-  const survivingAfter = after.rows.filter(row => oldRows.has(row.id));
-  const movedRows = new Set(hasIdentity ? survivingAfter.filter((row, i) => survivingBefore[i]?.id !== row.id).map(row => row.id) : []);
+  const survivingAfter = after.rows.filter(row => !!matched(row.id));
+  const movedRows = new Set(hasIdentity ? survivingAfter.filter((row, i) => survivingBefore[i]?.id !== beforeId(row.id)).map(row => row.id) : []);
   const rows: DiffRow[] = after.rows.map((row, i) => {
     const old = matched(row.id)?.row;
     const cells: Record<string, DiffCell> = {};
@@ -68,8 +71,10 @@ export function workspaceDiff(stage: Stage, comparison?: Table): WorkspaceDiff {
       const c = column.name;
       if (column.kind === "removed") {
         cells[c] = old && owns(old, c) ? { value: old.values[c], before: old.values[c], kind: "removed" } : { value: undefined };
-      } else if (!old || column.kind === "added") {
+      } else if (column.kind === "added" || hasIdentity && !old) {
         cells[c] = { value: row.values[c], after: row.values[c], kind: "added" };
+      } else if (!old) {
+        cells[c] = { value: row.values[c], after: row.values[c] };
       } else {
         const inserted = !owns(old, c) && owns(row, c);
         const cleared = owns(old, c) && (!owns(row, c) || (old.values[c] != null && row.values[c] === null));
@@ -79,15 +84,15 @@ export function workspaceDiff(stage: Stage, comparison?: Table): WorkspaceDiff {
         if (differs || retyped) { changed = true; changedColumns.add(c); }
       }
     }
-    return { key: `after:${row.id}`, id: row.id, number: i + 1, kind: !old ? "added" : changed ? "changed" : undefined, cells };
+    return { key: `after:${row.id}`, id: row.id, beforeId: old ? beforeId(row.id) : undefined, observation: hasIdentity ? undefined : "after", number: i + 1, kind: hasIdentity && !old ? "added" : changed ? "changed" : undefined, cells };
   });
   for (const column of columns) if (!column.kind && changedColumns.has(column.name)) column.kind = "changed";
   const removedRows: DiffRow[] = before.rows.filter(row => !hasIdentity || !outputIds.has(row.id)).map(row => ({
-    key: `before:${row.id}`, id: row.id, number: oldRows.get(row.id)!.number, kind: "removed",
-    cells: Object.fromEntries(columns.map(c => [c.name, owns(row, c.name) ? { value: row.values[c.name], before: row.values[c.name], kind: "removed" } : { value: undefined }])),
+    key: `before:${row.id}`, id: row.id, observation: hasIdentity ? undefined : "before", number: oldRows.get(row.id)!.number, kind: hasIdentity ? "removed" : undefined,
+    cells: Object.fromEntries(columns.map(c => [c.name, owns(row, c.name) ? { value: row.values[c.name], before: row.values[c.name], kind: hasIdentity || c.kind === "removed" ? "removed" : undefined } : { value: undefined }])),
   }));
-  const merged = hasIdentity ? withDeleted(rows, before.rows.map(row => removedRows.find(item => item.id === row.id) || rows.find(item => item.id === row.id)!), row => row.id) : [...rows, ...removedRows];
-  return { before, columns, rows: merged, removedRows: removedRows.length, removedColumns: columns.filter(c => c.kind === "removed").length };
+  const merged = hasIdentity ? withDeleted(rows, before.rows.map(row => removedRows.find(item => item.id === row.id) || rows.find(item => item.beforeId === row.id)!), row => row.beforeId ?? row.id) : [...rows, ...removedRows];
+  return { before, rowCorrespondenceKnown: hasIdentity, columns, rows: merged, removedRows: hasIdentity ? removedRows.length : 0, removedColumns: columns.filter(c => c.kind === "removed").length };
 }
 
 function operationAffects(operation: Stage, target: ChangeTarget): boolean {
@@ -108,6 +113,7 @@ function operationAffects(operation: Stage, target: ChangeTarget): boolean {
 }
 
 function matchesEffects(effects: OperationEffects, target: ChangeTarget) {
+  if (target.row?.observation && target.column && ["added","removed"].includes(target.kind)) return effects.columns[target.kind].includes(target.column);
   if (target.column && target.row) return effects.cells[target.kind][target.column]?.includes(target.row.id) ?? false;
   if (target.column) return effects.columns[target.kind].includes(target.column);
   return !!target.row && effects.rows[target.kind].includes(target.row.id);
@@ -137,19 +143,31 @@ function observedDescription(operation: Stage, target: ChangeTarget): string {
 }
 
 export function availableTransformations(stage: Stage) {
-  return (stage.transformations || []).filter(item => item.contributes_to_output !== false && (!item.execution_version || item.execution_version === stage.execution_version) && (!item.code_version || item.code_version === stage.code_version));
+  const items = (stage.transformations || []).filter(item => item.contributes_to_output !== false && (!item.execution_version || item.execution_version === stage.execution_version) && (!item.code_version || item.code_version === stage.code_version));
+  // Keep unresolved AST operations available. For the same actual statement,
+  // both conditions display the shared observed-change explanation once.
+  const linked = items.filter(item => item.method === "observed_change");
+  return [...linked, ...items.filter(item => item.method !== "observed_change" && !linked.some(other =>
+    other.code === item.code || other.code_location.start === item.code_location.start && other.output_columns.some(c => item.output_columns.includes(c))
+  ))];
 }
 
 export function transformationDetails(item: NonNullable<Stage["transformations"]>[number]): Transformation {
   return { id: item.id, code: item.code, text: item.description.text, source: item.description.source,
-    focus: item.focus_code, line: item.code_location, outputColumns: item.output_columns };
+    focus: item.focus_code, line: item.code_location, outputColumns: item.output_columns, mapping: item.mapping_status };
 }
 
 export function transformations(stage: Stage, target: ChangeTarget): Transformation[] {
   if (stage.transformations) {
-    return availableTransformations(stage).filter(item =>
+    let matched = (stage.transformations || []).filter(item => item.contributes_to_output !== false && (!item.execution_version || item.execution_version === stage.execution_version) && (!item.code_version || item.code_version === stage.code_version)).filter(item =>
       (target.revision ? item.revision_effects : item.execution_effects)?.some(effect => matchesEffects(effect,target))
-    ).map(transformationDetails);
+    );
+    const linked = matched.filter(item => item.method === "observed_change");
+    if (linked.length) matched = linked;
+    const assignments=matched.filter(item=>item.method==='assignment');
+    return matched.filter(item=>item.method==='assignment' || !assignments.some(assignment=>
+      assignment.statement_index===item.statement_index && ['derive','convert'].includes(item.kind) && assignment.output_columns.some(column=>item.output_columns.includes(column))
+    )).map(item => ({...transformationDetails(item),candidates:(target.revision ? item.revision_effects : item.execution_effects)?.some(effect=>matchesEffects(effect,target)&&['step-search-candidate','llm-step-candidate'].includes(effect.attribution || ''))}));
   }
   // Legacy records can still match an actual operation, but never the whole Step.
   if (target.revision) return [];

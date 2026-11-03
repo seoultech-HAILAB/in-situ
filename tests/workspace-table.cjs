@@ -26,10 +26,23 @@ const { ExSituExplanation } = load('web/components/trace/ex-situ-explanation');
 const { TransformationDetails } = load('web/components/trace/transformation-details');
 const { workspaceSteps } = load('web/components/trace/revision-workspace');
 const { transformations } = load('web/components/trace/workspace-diff');
+const { DirectUsedTables } = load('web/components/trace/direct-used-tables');
 const table = (columns, rows) => ({ columns, rows: rows.map(([id, values]) => ({id,values})), stats: {fields: Object.fromEntries(columns.map(c=>[c,{dtype:'number'}]))} });
 const before = table(['x','old'], [['a',{x:1,old:10}],['b',{x:2,old:20}]]);
 const after = table(['x','new'], [['a',{x:3,new:30}]]);
 const stage = {kind:'derive',trace_level:'detailed',input:before,table:after,params:{},code:'result = input_df'};
+
+test('direct input cards show the actual table and use summary without transformation highlights', () => {
+  const tables=[{id:'rates',name:'rates',table:table(['Currency','rate'],[['a',{Currency:'USD',rate:1}]]),uses:[{text:'Currency 열로 연결합니다.',line:41}]}];
+  const html=renderToStaticMarkup(React.createElement(DirectUsedTables,{tables,identity:'run:step3'}));
+  assert.ok(html.includes('이 Step에서 함께 사용한 표'));
+  assert.ok(html.includes('Currency 열로 연결합니다.'));
+  assert.ok(html.includes('L41') && html.includes('>USD<'));
+  assert.ok(!html.includes('data-change=') && !html.includes('변환 설명 보기'));
+  assert.equal(renderToStaticMarkup(React.createElement(DirectUsedTables,{tables:[],identity:'run:step4'})),'');
+  const ex=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:{...stage,direct_tables:tables},number:3}));
+  assert.ok(ex.includes('direct-used-tables') && ex.includes('>USD<'));
+});
 
 test('in-situ renders the three changes as keyboard-operable table targets and retains deleted values', () => {
   const html = renderToStaticMarkup(React.createElement(WorkspaceTable,{data:after,identity:'run:step',stage}));
@@ -39,7 +52,7 @@ test('in-situ renders the three changes as keyboard-operable table targets and r
   assert.ok(html.includes('aria-expanded="false"'));
   assert.ok(html.includes('>20</button>'), 'deleted rows retain their original values');
   assert.ok(html.includes('>10</button>'), 'deleted columns retain their original values');
-  assert.ok(html.includes('결과 CSV에는 포함되지 않습니다'));
+  assert.ok(!html.includes('removed-data-note'));
 });
 
 test('the original workspace and input/target tables remain plain tables', () => {
@@ -57,6 +70,10 @@ test('the selected chained transformation highlights its own expression without 
   assert.equal(highlighted,'.strip()');
   const text=html.match(/<code>([\s\S]*?)<\/code>/)[1].replace(/<[^>]*>/g,'').replace(/&quot;/g,'"');
   assert.equal(text,code);
+  const plain=renderToStaticMarkup(React.createElement(PythonCode,{code,focus:'.strip()',startLine:11,plain:true}));
+  assert.ok(!plain.includes('<mark')&&!plain.includes('py-'));
+  assert.ok(plain.includes('>11</span>'));
+  assert.equal(plain.match(/<code>([\s\S]*?)<\/code>/)[1].replace(/&quot;/g,'"'),code);
 });
 
 test('viewer line numbers use original source positions and preserve blank lines between AST statements', () => {
@@ -92,9 +109,41 @@ test('Ex-situ describes the selected code with matching line references and excl
     {id:'old',execution_version:'run-1',code_version:1,code_location:{start:4,end:4},output_columns:['Old'],description:{text:'오래된 설명',source:'llm'}},
   ]};
   const html=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2,onRefresh(){}}));
-  assert.ok(html.includes('Step 02')&&html.includes('도시 정리')&&html.includes('L11')&&html.includes('원본 Location'));
-  assert.ok(html.includes('코드 자연어 설명 갱신')&&!html.includes('오래된 설명'));
+  assert.ok(html.includes('Step 02')&&html.includes('>11</span>')&&html.includes('원본 Location'));
+  assert.ok(!html.includes('코드 자연어 설명 갱신')&&!html.includes('오래된 설명'));
+  assert.ok(!html.includes('transformation-code-label')&&!html.includes('transformation-source')&&!html.includes('explanation-summary'));
   assert.ok(html.includes('<pre')&&html.includes('strip')&&!html.includes('변환 설명 보기'));
+  assert.ok(!html.includes('py-')&&!html.includes('<mark'));
+});
+
+test('Ex-situ headings identify actual added, changed and removed columns without coloring prose or code', () => {
+  const effect=(columns={},rows={},cells={})=>({columns:{added:[],changed:[],removed:[],...columns},rows:{added:[],changed:[],removed:[],reordered:[],...rows},cells:{added:{},changed:{},removed:{},...cells}});
+  const item=(id,output,effects)=>({id,kind:'derive',method:'assignment',code:`result['${id}'] = value`,code_location:{start:11,end:11},output_columns:output,input_columns:['Location'],description:{text:'현재 값을 처리합니다.',source:'llm'},execution_effects:effects});
+  const selected={...stage,transformations:[
+    item('created',['City'],[effect({added:['City']},{},{added:{City:['a']}})]),
+    item('converted',['Cost'],[effect({changed:['Cost']},{},{changed:{Cost:['a']}})]),
+    item('selected',['City','Cost'],[effect({removed:['Location']},{},{removed:{Location:['a']}})]),
+    item('filtered',[],[effect({},{removed:['b']},{removed:{City:['b'],Cost:['b']}})]),
+    item('cleared',['Cost'],[effect({},{changed:['a']},{removed:{Cost:['a']}})]),
+    item('unverified',['Unknown'],[]),
+  ]};
+  const html=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2}));
+  const headings=[...html.matchAll(/<h3 class="explanation-change-heading">([\s\S]*?)<\/h3>/g)].map(match=>match[1]);
+  assert.equal(headings.length,6);
+  assert.ok(headings[0].includes('data-change-kind="added"')&&headings[0].includes('City')&&!headings[0].includes('Location'));
+  assert.ok(headings[1].includes('data-change-kind="changed"')&&headings[1].includes('Cost'));
+  assert.ok(headings[2].includes('data-change-kind="removed"')&&headings[2].includes('Location')&&!headings[2].includes('City'));
+  assert.ok(headings[3].includes('data-change-kind="removed"')&&headings[3].includes('>행<')&&!headings[3].includes('Cost'));
+  assert.ok(headings[4].includes('data-change-kind="changed"')&&!headings[4].includes('data-change-kind="removed"'));
+  assert.ok(headings[5].includes('Unknown')&&!headings[5].includes('data-change-kind'));
+  assert.ok(!html.includes('py-')&&!html.includes('<mark'));
+});
+
+test('Ex-situ candidate headings use the confirmed-to-candidate difference rather than pipeline-input additions', () => {
+  const effect=kind=>({columns:{added:[],changed:[],removed:[],[kind]:['City']},rows:{added:[],changed:[],removed:[],reordered:[]},cells:{added:{},changed:{},removed:{}}});
+  const selected={...stage,transformations:[{id:'city',code:'result = build_city()',code_location:{start:11,end:11},output_columns:['City'],description:{text:'도시를 처리합니다.',source:'llm'},execution_effects:[effect('added')],revision_effects:[effect('changed')]}]};
+  const html=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2,label:'Step 2a'}));
+  assert.ok(html.includes('data-change-kind="changed"')&&!html.includes('data-change-kind="added"'));
 });
 
 test('only the revised Step receives a candidate immediately after its baseline, in both conditions', () => {
@@ -115,10 +164,14 @@ test('Ex-situ and the In-situ selected transformation render the same local pros
   item.execution_effects=[{columns:{added:[],changed:['City'],removed:[]},rows:{added:[],changed:[],removed:[]},cells:{added:{},changed:{},removed:{}}}];
   const inItem=transformations(selected,{kind:'changed',column:'City'})[0];
   const shared=renderToStaticMarkup(React.createElement(TransformationDetails,{item:inItem}));
+  const plain=renderToStaticMarkup(React.createElement(TransformationDetails,{item:inItem,plainCode:true}));
   const ex=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2,label:'Step 2a',revision:{label:'Step 2a',request:'도시를 정리해줘'}}));
-  assert.ok(ex.includes(shared));
+  assert.ok(ex.includes(plain));
+  assert.ok(!plain.includes('py-')&&!plain.includes('<mark'));
+  assert.ok(shared.includes(item.description.text)&&shared.includes('python-line-numbers'));
+  assert.ok(!shared.includes('transformation-code-label')&&!shared.includes('transformation-source'));
   assert.ok(!shared.includes('source-definitions')&&!shared.includes('split'));
-  assert.ok(ex.includes('Step 2a')&&ex.includes('수정 내용')&&ex.includes('도시를 정리해줘'));
+  assert.ok(ex.includes('Step 2a')&&!ex.includes('수정 내용')&&!ex.includes('도시를 정리해줘'));
 });
 
 test('candidate table changes compare confirmed output to candidate output instead of candidate input', () => {

@@ -444,6 +444,8 @@ def generate(sid: str, body: Generate):
 
 from .revision_preview import install as install_revision_preview
 install_revision_preview(app)
+from .execution_observations import install as install_execution_observations
+install_execution_observations(app)
 
 
 class EventBody(BaseModel):

@@ -10,13 +10,17 @@ def effects(operation):
     before, after = operation.get('input'), operation.get('table')
     if not before or not after:
         return None
-    identity = operation.get('trace_level') in ('detailed','partial') and operation.get('kind') in PRESERVING
+    correspondence=operation.get('row_correspondence',{})
+    complete=operation.get('row_correspondence_complete',False)
+    identity = complete or operation.get('row_identity_verified',False) or operation.get('trace_level') in ('detailed','partial') and operation.get('kind') in PRESERVING
     result = {'operation_id':operation.get('id'), 'operation_kind':operation.get('kind'),
               'code_location':operation.get('code_location'), 'expression_location':operation.get('expression_location'),
               'row_identity':identity, 'columns':{k:[] for k in KINDS},
               'rows':{k:[] for k in (*KINDS,'reordered')}, 'cells':{k:{} for k in KINDS}}
     old = {r['id']:r for r in before['rows']}
     new = {r['id']:r for r in after['rows']}
+    source_id=lambda r:correspondence.get(r) if complete else r
+    surviving={source_id(r):r for r in new if source_id(r) in old} if identity else {}
     old_cols, new_cols = before['columns'], after['columns']
     result['columns']['added'] = [c for c in new_cols if c not in old_cols]
     result['columns']['removed'] = [c for c in old_cols if c not in new_cols]
@@ -33,19 +37,19 @@ def effects(operation):
     for c in result['columns']['added']:
         for row_id in new: cell('added',c,row_id)
     for c in result['columns']['removed']:
-        for row_id in old: cell('removed',c,row_id)
+        for row_id in old: cell('removed',c,surviving.get(row_id,row_id))
     if identity:
-        result['rows']['added'] = [r for r in new if r not in old]
-        result['rows']['removed'] = [r for r in old if r not in new]
-        old_survivors = [r for r in old if r in new]
-        new_survivors = [r for r in new if r in old]
-        result['rows']['reordered'] = [r for i,r in enumerate(new_survivors) if old_survivors[i] != r]
+        result['rows']['added'] = [r for r in new if source_id(r) not in old]
+        result['rows']['removed'] = [r for r in old if r not in surviving]
+        old_survivors = [r for r in old if r in surviving]
+        new_survivors = [r for r in new if source_id(r) in old]
+        result['rows']['reordered'] = [r for i,r in enumerate(new_survivors) if old_survivors[i] != source_id(r)]
         for row_id in result['rows']['added']:
             for c in common_cols: cell('added',c,row_id)
         for row_id in result['rows']['removed']:
             for c in common_cols: cell('removed',c,row_id)
         for row_id in new_survivors:
-            a, b = old[row_id]['values'], new[row_id]['values']
+            a, b = old[source_id(row_id)]['values'], new[row_id]['values']
             row_changed = row_id in result['rows']['reordered']
             for c in common_cols:
                 if c not in a and c in b: kind = 'added'
@@ -70,6 +74,9 @@ def equal_location(a,b):
 
 def compatible(item, operation):
     kind = operation.get('kind')
+    if kind=='assignment':return item['method']=='assignment'
+    if item['method']=='assignment':return False
+    if kind=='observed':return True
     if item['kind']=='derive': return kind in ('derive','fillna','replace','ffill','bfill','round','clip','where','mask')
     if item['kind']=='convert': return kind in ('derive','astype')
     if item['kind']=='sort': return kind in ('sort_values','sort_index')
@@ -90,7 +97,8 @@ def restrict(observed, columns, row_changes):
         result['rows']={k:[] for k in (*KINDS,'reordered')}
         # A row header can reflect a verified value change in this expression.
         if result['row_identity']:
-            changed={r for values in result['cells'].values() for ids in values.values() for r in ids}
+            changed={r for values in result['cells'].values() for column,ids in values.items()
+                     if column not in observed['columns']['added'] and column not in observed['columns']['removed'] for r in ids}
             result['rows']['changed']=[r for r in observed['rows']['changed'] if r in changed]
     return result
 
@@ -113,7 +121,7 @@ def bind(items, stage, tree):
     for item in items:
         item['execution_effects']=[]
         item['removed_columns']=[]
-    for operation in stage.get('operations',[]):
+    for operation in [*stage.get('operations',[]),*stage.get('operation_observations',[])]:
         if any(operation.get(key) and stage.get(key) and operation[key]!=stage[key] for key in ('execution_version','code_version')):continue
         observed=effects(operation)
         if not observed or operation.get('kind') in ('copy','setup'): continue
@@ -150,10 +158,63 @@ def bind(items, stage, tree):
                     columns={c for c in own if sum(c in other.get('output_columns',[]) for other in candidates)==1}
                     if not columns: continue
             selected=restrict(observed,columns,bool(exact) or len(candidates)==1 and item['row_effect'] in ('remove','reorder'))
+            if operation.get('kind')=='assignment':
+                selected=restrict(observed,set(operation.get('written_columns',[])),False)
+            elif operation.get('kind')=='observed' and item['kind']=='filter':
+                selected=restrict(observed,set(),True)
+                selected['cells']['removed']={c:[r for r in ids if r in observed['rows']['removed']] for c,ids in observed['cells']['removed'].items()}
+            elif operation.get('kind')=='observed' and item['method']=='select':
+                selected=restrict(observed,set(observed['columns']['removed'])|set(observed['columns']['added'])|set(observed['columns']['changed']),False)
+                selected['rows']={k:[] for k in (*KINDS,'reordered')}
+            aliases=stage.get('observation_row_aliases',{}) if operation.get('observation_scope') else {}
+            for values in (selected['rows'],):
+                for kind,ids in values.items():values[kind]=[aliases.get(r,r) for r in ids]
+            for columns in selected['cells'].values():
+                for column,ids in columns.items():columns[column]=[aliases.get(r,r) for r in ids]
             item['execution_effects'].append(selected)
             item['removed_columns']=list(dict.fromkeys(item['removed_columns']+selected['columns']['removed']))
+    bind_step_removals(items,stage)
     for item in items:item['syntax_only']=not bool(item['execution_effects'])
     return items
+
+
+def bind_step_removals(items,stage):
+    """Search every executed statement in this Step for unmatched removals."""
+    aliases=stage.get('observation_row_aliases',{})
+    for operation in stage.get('operation_observations',[]):
+        observed=effects(operation)
+        if not observed:continue
+        line_set=set(operation.get('executed_lines',[]))
+        candidates=[item for item in items if item.get('contributes_to_output') is not False and
+            item['statement_index']==operation.get('statement_index') and item['code_location']['start'] in line_set]
+        def attach(item,selected,ambiguous):
+            selected['attribution']='step-search-candidate' if ambiguous else 'executed-statement'
+            for kind,ids in selected['rows'].items():selected['rows'][kind]=[aliases.get(r,r) for r in ids]
+            for columns in selected['cells'].values():
+                for column,ids in columns.items():columns[column]=[aliases.get(r,r) for r in ids]
+            item['execution_effects'].append(selected)
+            item['removed_columns']=list(dict.fromkeys(item['removed_columns']+selected['columns']['removed']))
+        for column in observed['columns']['removed']:
+            if any(column in binding['columns']['removed'] for item in items for binding in item['execution_effects']):continue
+            matching=[item for item in candidates if item['kind'] in ('select','drop','rename','reshape','call') and
+                (item['kind']!='select' or column not in item['output_columns'])]
+            for item in matching:
+                selected=restrict(observed,{column},False)
+                selected['columns']['added']=[];selected['columns']['changed']=[]
+                selected['cells']['added']={};selected['cells']['changed']={}
+                selected['rows']={k:[] for k in (*KINDS,'reordered')}
+                attach(item,selected,len(matching)>1)
+        removed=observed['rows']['removed']
+        if not removed:continue
+        claimed={r for item in items for binding in item['execution_effects'] for r in binding['rows']['removed']}
+        missing=[r for r in removed if aliases.get(r,r) not in claimed]
+        if not missing:continue
+        matching=[item for item in candidates if item['row_effect']=='remove' or item['method']=='selection']
+        for item in matching:
+            selected=restrict(observed,set(),True)
+            selected['rows']={k:(list(missing) if k=='removed' else []) for k in (*KINDS,'reordered')}
+            selected['cells']['removed']={c:[r for r in ids if r in missing] for c,ids in observed['cells']['removed'].items()}
+            attach(item,selected,len(matching)>1)
 
 
 def revision_effects(run, baseline):
@@ -163,6 +224,11 @@ def revision_effects(run, baseline):
                    for st in (baseline,stage) for op in (st.get('operations') or [st]))
     operation={'id':'revision:'+run['id'], 'kind':'derive', 'input':baseline['table'], 'table':stage['table'],
                'trace_level':'detailed' if comparable else 'common', 'code_location':stage.get('code_location')}
+    base_map={value:key for key,value in baseline.get('row_correspondence',{}).items()}
+    if baseline.get('row_correspondence_complete') and stage.get('row_correspondence_complete'):
+        correspondence={output:base_map[source] for output,source in stage['row_correspondence'].items() if source in base_map}
+        stage.update(revision_row_correspondence=correspondence,revision_row_correspondence_complete=True)
+        operation.update(row_correspondence=correspondence,row_correspondence_complete=True)
     observed=effects(operation)
     items=[item for item in stage.get('transformations',[]) if item.get('contributes_to_output') is not False]
     for item in items:
@@ -170,14 +236,24 @@ def revision_effects(run, baseline):
         bindings=item.get('execution_effects',[])
         owned={c for binding in bindings for values in (binding['columns'],binding['cells']) for group in values.values() for c in group}
         columns={c for c in owned if sum(any(c in group for b in other.get('execution_effects',[]) for values in (b['columns'],b['cells']) for group in values.values()) for other in items)==1}
-        row_changes=bool(bindings) and item['kind'] in ('sort','filter')
+        if item['method']=='observed_change':columns=set(item['output_columns'])
+        row_changes=bool(bindings) and (item['kind'] in ('sort','filter') or item['method']=='selection')
         if columns or row_changes:
             selected=restrict(observed,columns,row_changes)
             if item['kind']=='sort':
                 selected['rows']={k:(observed['rows']['reordered'] if k in ('changed','reordered') else []) for k in (*KINDS,'reordered')}
-            elif item['kind']=='filter':
+            elif item['kind']=='filter' or item['method']=='selection':
                 selected['rows']['changed']=[]; selected['rows']['reordered']=[]
+                removed={r for binding in bindings for r in binding['rows']['removed']}
+                removed={base_map.get(r,r) for r in removed}
+                selected['rows']['removed']=[r for r in observed['rows']['removed'] if r in removed]
+                prior=[old for old in baseline.get('transformations',[]) if old['method']==item['method'] and
+                       old['code_location']['start']==item['code_location']['start'] and old['code_location']['start_column']==item['code_location']['start_column']]
+                old_removed={r for old in prior for binding in old.get('execution_effects',[]) for r in binding['rows']['removed']}
+                inverse={source:output for output,source in stage.get('row_correspondence',{}).items()}
+                restored={inverse.get(r,r) for r in old_removed}
+                selected['rows']['added']=[r for r in observed['rows']['added'] if r in restored]
                 for kind in ('added','removed'):
-                    selected['cells'][kind]={c:[r for r in ids if r in observed['rows'][kind]] for c,ids in observed['cells'][kind].items()}
+                    selected['cells'][kind]={c:[r for r in ids if r in selected['rows'][kind]] for c,ids in observed['cells'][kind].items()}
             item['revision_effects'].append(selected)
     return run

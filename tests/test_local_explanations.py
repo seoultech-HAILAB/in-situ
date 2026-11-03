@@ -90,7 +90,7 @@ def test_payload_and_prompt_no_longer_require_original_column_paths():
     item = next(t for t in payload['transformation_targets'] if t['output_columns'] == ['City'])
     assert item['code'] == 'location_parts[0].str.strip()'
     assert 'source_context' not in json.dumps(payload)
-    assert ' Seoul ' not in json.dumps(payload)
+    assert payload['observed_changes'][0]['after']['sample'][0]['values']['City']=='Seoul'
     assert 'source_context' not in explanations.INSTRUCTIONS
     assert '원본 열부터' not in explanations.INSTRUCTIONS
     assert '개별 연산만 설명' in explanations.INSTRUCTIONS
@@ -128,3 +128,46 @@ def test_selected_edit_still_limits_changes_to_current_operation():
         validate_selected_edit(CITY_CODE.replace("split(',',", "split(';',"), run, selection, 'step')
     with pytest.raises(ValueError, match='현재 선택한 연산 밖'):
         validate_selected_edit(CITY_CODE.replace('location_parts[1].str.strip()', 'location_parts[1].str.strip().str.upper()'), run, selection, 'step')
+
+
+def test_operation_scope_rejects_prior_location_split_and_preserves_local_selection_description():
+    from backend.operation_prose import operation_local_text
+    current=snapshot()
+    stage=current['stages'][1]
+    item=next(item for item in stage['transformations'] if item['method']=='assignment' and item['output_columns']==['City'])
+    assert not operation_local_text('Location에서 나눈 첫 번째 값의 양끝 공백을 제거해 City에 저장합니다.',item,{'Location','City','Country'})
+    assert not operation_local_text('쉼표로 나눈 부분의 공백을 제거합니다.',item,{'Location','City'})
+    assert operation_local_text('선택한 값의 양끝 공백을 제거해 City에 저장합니다.',item,{'Location','City','Country'})
+    item['description']={'text':'Location에서 나눈 첫 번째 값을 정리합니다.','source':'llm'}
+    annotate_run(current)
+    refreshed=next(t for t in current['stages'][1]['transformations'] if t['id']==item['id'])
+    assert refreshed['description']['source']=='ast'
+    assert 'Location' not in refreshed['description']['text']
+    selector={'code':"result[['City','Country']]",'output_columns':['City','Country'],'input_columns':['City','Country'],'removed_columns':['Location']}
+    assert operation_local_text('Location 열을 제외하고 City와 Country 열만 선택합니다.',selector,{'Location','City','Country'})
+    assert not operation_local_text('City별로 정렬한 뒤 Location을 제외합니다.',selector,{'Location','City','Country'})
+
+
+def test_out_of_scope_model_text_falls_back_only_for_its_operation():
+    current=snapshot()
+    targets=explanations.transformation_targets(current)
+    data={'fingerprint':explanations.fingerprint(current),'model':'test','prompt_version':explanations.PROMPT_VERSION,
+          'steps':[{'step_no':1,'title':'현재 열 처리','text':'선택한 값을 정리해 열에 저장합니다.'}],
+          'columns':[{**{key:target[key] for key in ('step_no','operation_no','column')},'text':'현재 값을 계산합니다.'} for target in explanations.column_targets(current)],
+          'transformations':[{**{key:target[key] for key in ('step_no','transformation_no')},
+              'text':'Location에서 나눈 값을 정리해 City에 저장합니다.' if target['code'].startswith("stores['City'] =") else '현재 코드의 값으로 결과를 계산합니다.'} for target in targets]}
+    explanations.attach(current,data,True)
+    city=next(t for t in current['stages'][1]['transformations'] if t['method']=='assignment' and t['output_columns']==['City'])
+    assert city['description']['source']=='ast' and 'Location' not in city['description']['text']
+    assert current['explanation_status']=='ready' and current['explanation_meta']['operation_scope_fallbacks']
+    assert any(t['description']['source']=='llm' for t in current['stages'][1]['transformations'])
+
+
+def test_overlapping_column_names_do_not_confuse_operation_description_scope():
+    from backend.operation_prose import operation_local_text
+    columns={'Store Cost','Store Cost Currency'}
+    currency={'code':"result['Store Cost Currency'] = values",'output_columns':['Store Cost Currency']}
+    cost={'code':"result['Store Cost'] = values",'output_columns':['Store Cost']}
+    assert operation_local_text('Store Cost Currency 열에 저장합니다.',currency,columns)
+    assert not operation_local_text('Store Cost 열의 값을 처리합니다.',currency,columns)
+    assert not operation_local_text('Store Cost Currency 열의 값을 처리합니다.',cost,columns)

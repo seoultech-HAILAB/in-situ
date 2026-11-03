@@ -24,11 +24,12 @@ export const researchView = () =>
 
 const explanationsReady = (run: Run) =>
   run.explanation_status === "ready" &&
+  run.observed_change_links?.version === "observed-change-links-v1" &&
   run.stages
     .slice(1)
     .every(
       (stage) =>
-        stage.transformations_version === "ast-transformations-v2" &&
+        stage.transformations_version === "ast-transformations-v3" &&
         (stage.transformations || []).every(item => !!item.description?.text) &&
         stage.column_explanations !== undefined &&
         (stage.operations || []).every((op) => op.column_explanations !== undefined),
@@ -58,6 +59,15 @@ export async function api<T>(path: string, body?: unknown, options = { explain: 
   let data = await res.json();
   const isSession =
     data?.run && Array.isArray(data.runs) && ["ex", "in-situ"].includes(data.condition);
+  if (options.explain && isSession && !["native-statements-v3", "unavailable-v3"].includes(data.run.execution_observations_version) && !path.endsWith("/execution-observations")) {
+    try {
+      const observed = await fetch(`/api/sessions/${data.id}/execution-observations`, {
+        method: "POST", headers, body: JSON.stringify({ run_id: data.run.id }),
+      });
+      if (observed.ok) data = await observed.json();
+      else data.run.execution_observations_error = "실행 관찰 정보를 갱신하지 못했습니다.";
+    } catch { data.run.execution_observations_error = "실행 관찰 서버에 연결하지 못했습니다."; }
+  }
   if (options.explain && !path.endsWith("/explanations") && isSession && !explanationsReady(data.run)) {
     try {
       const described = await fetch(`/api/sessions/${data.id}/explanations`, {
@@ -78,7 +88,7 @@ export async function api<T>(path: string, body?: unknown, options = { explain: 
       data.run.explanation_error = "설명 서버에 연결하지 못했습니다.";
     }
   }
-  if (options.explain && !path.endsWith("/explanations") && isSession && data.pending_revision?.status === "ready" && !data.pending_revision.explanation_status) {
+  if (options.explain && !path.endsWith("/explanations") && isSession && data.pending_revision?.status === "ready" && (!data.pending_revision.explanation_status || !data.pending_revision.stage?.observed_change_status)) {
     try {
       const described = await fetch(`/api/sessions/${data.id}/revision-preview/${data.pending_revision.id}/explanations`, {
         method: "POST", headers, body: "{}",
@@ -104,8 +114,6 @@ export const isExplained = (run: Run) => explanationsReady(run);
 export function fmt(v: CellValue | undefined): string {
   if (v == null) return "";
   if (Array.isArray(v)) return JSON.stringify(v);
-  if (typeof v === "number")
-    return v !== 0 && Math.abs(v) < 0.000001 ? String(v) : v.toLocaleString("ko-KR", { maximumFractionDigits: 20 });
   return String(v);
 }
 

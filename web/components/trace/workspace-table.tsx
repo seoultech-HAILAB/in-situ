@@ -8,7 +8,7 @@ import { CHANGE_LABEL, TransformationBubble } from "./transformation-bubble";
 const cellValue = (value: Parameters<typeof fmt>[0]) => value === undefined ? <span className="absent-value">—</span> : value === null ? <span className="null-value">null</span> : typeof value === "boolean" ? String(value) : fmt(value);
 
 /** Deleted values are visible annotations; the executed result stays unchanged. */
-export function WorkspaceTable({ data, identity, stage, comparison, onRefresh, refreshing }: { data: Table; identity: string; stage?: Stage; comparison?: Table; onRefresh?: () => void; refreshing?: boolean }) {
+export function WorkspaceTable({ data, identity, stage, comparison }: { data: Table; identity: string; stage?: Stage; comparison?: Table }) {
   const viewport = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<{ anchor: HTMLElement; target: ChangeTarget; key: string } | null>(null);
   const diff = useMemo(() => stage ? workspaceDiff(stage, comparison) : null, [stage, comparison]);
@@ -24,13 +24,14 @@ export function WorkspaceTable({ data, identity, stage, comparison, onRefresh, r
       <span><i className="change-added" />추가</span><span><i className="change-changed" />변경</span><span><i className="change-removed" />삭제</span>
       <span className="legend-hint">색이 있는 영역을 눌러 변환 보기</span>
     </div>}
+    {diff?.before && !diff.rowCorrespondenceKnown && <div className="table-correspondence-note" role="status">행 대응 미확인 · 변환 전/후를 구분해 표시합니다. 행 생성·삭제 표시는 보류합니다.</div>}
     <div className="workspace-table-scroll" ref={viewport} tabIndex={0} role="region" aria-label="테이블 스크롤">
       <table className={`workspace-table ${diff ? "in-situ-table" : ""}`}>
         <thead><tr><th className="row-index" scope="col">#</th>{diff ? diff.columns.map(column => <th scope="col" key={column.name} data-change={column.kind}>
           {column.kind ? trigger({ kind: column.kind, column: column.name }, `column:${column.name}`, `${column.name} 열`, <>{column.name}<span className="column-change-mark" aria-hidden="true">{column.kind === "added" ? "+" : column.kind === "removed" ? "−" : "~"}</span></>) : column.name}
         </th>) : data.columns.map(column => <th scope="col" key={column} title={column}>{column}</th>)}</tr></thead>
-        <tbody>{diff ? diff.rows.map(row => <tr key={row.key} data-row-change={row.kind}>
-          <th scope="row" className="row-index" data-change={row.kind}>{row.kind ? trigger({ kind: row.kind, row }, row.key, `${row.number}행`, <>{row.kind === "removed" ? "−" : row.kind === "added" ? "+" : ""}{row.number}</>) : row.number}</th>
+        <tbody>{diff ? diff.rows.map(row => <tr key={row.key} data-row-change={row.kind} data-observation={row.observation}>
+          <th scope="row" className="row-index" data-change={row.kind}>{row.kind ? trigger({ kind: row.kind, row }, row.key, `${row.number}행`, <>{row.kind === "removed" ? "−" : row.kind === "added" ? "+" : ""}{row.number}</>) : <>{row.observation && <span className="row-observation-label">{row.observation === "before" ? "전" : "후"} </span>}{row.number}</>}</th>
           {diff.columns.map(column => { const cell = row.cells[column.name]; return <td key={column.name} data-change={cell.kind} className={typeof cell.value === "number" ? "is-number" : undefined}>
             {cell.kind ? trigger({ kind: cell.kind, row, column: column.name, cell }, `${row.key}:${column.name}`, `${row.number}행 ${column.name}`, cellValue(cell.value)) : cellValue(cell.value)}
           </td>; })}
@@ -38,7 +39,6 @@ export function WorkspaceTable({ data, identity, stage, comparison, onRefresh, r
       </table>
       {!(diff ? diff.rows.length : data.rows.length) && <div className="empty-table-label">0행</div>}
     </div>
-    {diff && (diff.removedRows > 0 || diff.removedColumns > 0) && <div className="removed-data-note">삭제된 {diff.removedRows > 0 ? `${diff.removedRows}행` : ""}{diff.removedRows > 0 && diff.removedColumns > 0 ? " · " : ""}{diff.removedColumns > 0 ? `${diff.removedColumns}열` : ""}은 빨간색으로 남겨 표시합니다. 결과 CSV에는 포함되지 않습니다.</div>}
-    {picked && stage && <TransformationBubble anchor={picked.anchor} target={picked.target} stage={stage} onClose={dismiss} onRefresh={onRefresh} refreshing={refreshing} />}
+    {picked && stage && <TransformationBubble anchor={picked.anchor} target={picked.target} stage={stage} onClose={dismiss} />}
   </>;
 }

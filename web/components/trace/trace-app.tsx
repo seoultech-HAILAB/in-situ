@@ -6,11 +6,18 @@ import { Button } from "@/components/ui/button";
 import { api as traceApi, PythonCode, sourceSnippet, taskLabel, type Health, type Session, type TaskInput, type TaskSummary } from "@/lib/trace";
 import { WorkspaceTable } from "./workspace-table";
 import { ExSituExplanation } from "./ex-situ-explanation";
+import { DirectUsedTables } from "./direct-used-tables";
 import { workspaceSteps } from "./revision-workspace";
 
 type Message = { id: string; request: string; response: string; failed?: boolean };
 type PanelSizes = { code: number; chat: number; top: number };
 const DEFAULT_SIZES: PanelSizes = { code: 50, chat: 25, top: 73 };
+const OUTPUT_VIEW_ID = "view:final-output";
+const STEP_HEADER_TONES = [
+  { background: "#eaf4f1", selected: "#d5e9e2" },
+  { background: "#edf2fa", selected: "#dbe6f5" },
+  { background: "#f2eef8", selected: "#e5dcf1" },
+];
 
 export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" }) {
   const sessionKey = condition === "in-situ" ? "trace-in-situ-session" : "trace-woz-session";
@@ -38,8 +45,12 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   const preview = session?.pending_revision;
   // Code blocks and tables use the same actual execution stage.
   const steps = useMemo(() => workspaceSteps(run, preview), [run, preview]);
-  const step = steps.find((stage) => stage.viewId === stepId) ?? steps[0];
-  const stepIndex = steps.findIndex((stage) => stage.viewId === step?.viewId);
+  const finalStep = steps.filter(stage => !stage.isCandidate).at(-1);
+  const viewingOutput = condition === "in-situ" && stepId === OUTPUT_VIEW_ID && !!finalStep;
+  const step = viewingOutput ? finalStep : steps.find((stage) => stage.viewId === stepId) ?? steps[0];
+  const selectedViewId = viewingOutput ? OUTPUT_VIEW_ID : step?.viewId;
+  const views = [...steps, ...(condition === "in-situ" && finalStep ? [{ viewId: OUTPUT_VIEW_ID, viewLabel: "Output" }] : [])];
+  const viewIndex = views.findIndex(view => view.viewId === selectedViewId);
   const observedVersion = step?.execution_version ?? run?.id;
   const originalStep = run?.stages.find(stage => stage.id === step?.id);
   const taskChanged = !!session && taskId !== session.task_id;
@@ -107,8 +118,8 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
 
   useEffect(() => {
     codeList.current?.querySelector<HTMLElement>("[data-selected=true]")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [step?.viewId, observedVersion]);
-  useEffect(() => { setTableView("output"); }, [step?.viewId, observedVersion]);
+  }, [selectedViewId, observedVersion]);
+  useEffect(() => { setTableView("output"); }, [selectedViewId, observedVersion]);
   useEffect(() => { chatEnd.current?.scrollIntoView({ block: "nearest" }); }, [pending, failures, run?.id, preview?.id, preview?.status]);
 
   // Follow ancestry so undo and forks show only the current execution's history.
@@ -185,18 +196,6 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
     });
   }
 
-  function refreshDescriptions() {
-    if (!session || !run) return;
-    void perform("변환 설명 갱신", async () => {
-      const next = step?.isCandidate && preview
-        ? await api<Session>(`/sessions/${session.id}/revision-preview/${preview.id}/explanations`, {})
-        : await api<Session>(`/sessions/${session.id}/explanations`, { run_id: run.id, refresh_transformations: true });
-      accept(next);
-      if (step?.isCandidate && next.pending_revision?.explanation_status === "failed") throw new Error(next.pending_revision.explanation_error || "후보 설명을 갱신하지 못했습니다.");
-      if (next.run?.explanation_status === "failed") throw new Error(next.run.explanation_error || "변환 설명을 갱신하지 못했습니다.");
-    });
-  }
-
   function resize(axis: keyof PanelSizes, delta: number) {
     setSizes((current) => {
       const limits = axis === "code" ? [25, 75] : axis === "chat" ? [20, 45] : [40, 85];
@@ -243,6 +242,8 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
     ...(session?.target ? [{ id: "target", label: "Target", table: session.target }] : [])];
   const visibleTable = tables.find((item) => item.id === tableView)?.table;
   const canSend = !!request.trim() && !!run && !!step && !preview && !busy && !!health?.api_configured && !taskChanged;
+  const tableContent = visibleTable ? <WorkspaceTable key={`${observedVersion}:${selectedViewId}:${tableView}`} data={visibleTable} identity={`${observedVersion}:${selectedViewId}:${tableView}`} stage={condition === "in-situ" && !viewingOutput && tableView === "output" ? step : undefined}
+    comparison={!viewingOutput && step?.isCandidate ? originalStep?.table : undefined} /> : <div className="pane-empty" />;
 
   return (
     <div className={`workspace workspace-${condition === "in-situ" ? "in-situ" : "ex-situ"}`} ref={root} style={{ "--code-size": `${sizes.code}%`, "--chat-size": `${sizes.chat}%`, "--top-size": `${sizes.top}%` } as CSSProperties}>
@@ -269,38 +270,44 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
             <section className="code-pane" aria-label="Step별 코드">
               <div className="pane-toolbar"><span>Python</span><span className="pane-meta">{run ? `${run.stages.length - 1} steps` : ""}</span></div>
               <div className="code-list" ref={codeList} aria-busy={!!busy}>
-                {steps.map((stage) => <article className={`code-step ${stage.isCandidate ? "code-step-candidate" : ""}`} key={stage.viewId} data-selected={stage.viewId === step?.viewId}>
-                  <button className="code-step-heading" aria-label={`${stage.viewLabel} 선택`} aria-pressed={stage.viewId === step?.viewId} onClick={() => selectStep(stage.viewId)}>
-                    <span>{stage.viewLabel}{stage.isCandidate && <span className="candidate-badge">수정 후보</span>}</span><span className="step-line-range">{stage.code_location ? `L${stage.code_location.start}–${stage.code_location.end}` : ""}</span>
+                {steps.map((stage,index) => <article className={`code-step ${stage.isCandidate ? "code-step-candidate" : ""}`} key={stage.viewId} data-selected={stage.viewId === selectedViewId}
+                  style={stage.isCandidate ? undefined : { "--step-heading-bg": STEP_HEADER_TONES[((stage.order || index+1)-1)%STEP_HEADER_TONES.length].background, "--step-heading-selected": STEP_HEADER_TONES[((stage.order || index+1)-1)%STEP_HEADER_TONES.length].selected } as CSSProperties}>
+                  <button className="code-step-heading" aria-label={`${stage.viewLabel} 선택`} aria-pressed={stage.viewId === selectedViewId} onClick={() => selectStep(stage.viewId)}>
+                    <span className="step-heading-number">{stage.viewLabel}{stage.isCandidate && <span className="candidate-badge">수정 후보</span>}</span>
+                    {stage.nl_explanation?.title && <span className="step-heading-title">{stage.nl_explanation.title}</span>}
+                    <span className="step-line-range">{stage.code_location ? `L${stage.code_location.start}–${stage.code_location.end}` : ""}</span>
                   </button>
-                  <div className="step-code" onClick={() => selectStep(stage.viewId)}><PythonCode code={stage.viewCode ?? sourceSnippet(run?.code, stage.code, stage.code_location)} startLine={stage.code_location?.start ?? 1} /></div>
+                  <div className="step-code" onClick={() => selectStep(stage.viewId)}><PythonCode code={stage.viewCode ?? sourceSnippet(run?.code, stage.code, stage.code_location)} startLine={stage.code_location?.start ?? 1} plain={condition === "ex"} /></div>
                 </article>)}
+                {condition === "in-situ" && finalStep && <article className="code-output-section" data-selected={viewingOutput}>
+                  <button className="output-heading" aria-label="Output 선택" aria-pressed={viewingOutput} onClick={() => selectStep(OUTPUT_VIEW_ID)}><span>Output</span><span className="step-line-range">최종 실행 결과</span></button>
+                  <p className="output-summary">{finalStep.table.rows.length}행 × {finalStep.table.columns.length}열</p>
+                </article>}
                 {!steps.length && <div className="pane-empty" role="status">{booting ? "불러오는 중…" : busy || "과제를 선택하고 실행하세요."}</div>}
               </div>
             </section>
             {separator("code", "코드와 테이블 너비 조절")}
-            <section className="table-pane" aria-label="중간 테이블">
+            <section className="table-pane" aria-label={viewingOutput ? "최종 결과 테이블" : "중간 테이블"}>
               <div className="pane-toolbar">
-                <Button variant="ghost" size="icon-xs" aria-label="이전 Step" disabled={stepIndex <= 0} onClick={() => selectStep(steps[stepIndex - 1].viewId)}><ChevronLeft /></Button>
-                <select className="step-select" aria-label="테이블 Step 선택" value={step?.viewId ?? ""} disabled={!steps.length} onChange={(event) => selectStep(event.target.value)}>
+                <Button variant="ghost" size="icon-xs" aria-label="이전 Step" disabled={viewIndex <= 0} onClick={() => selectStep(views[viewIndex - 1].viewId)}><ChevronLeft /></Button>
+                <select className="step-select" aria-label="테이블 Step 선택" value={selectedViewId ?? ""} disabled={!steps.length} onChange={(event) => selectStep(event.target.value)}>
                   {!steps.length && <option value="">Step</option>}
-                  {steps.map((stage) => <option key={stage.viewId} value={stage.viewId}>{stage.viewLabel}</option>)}
+                  {views.map((view) => <option key={view.viewId} value={view.viewId}>{view.viewLabel}</option>)}
                 </select>
-                <Button variant="ghost" size="icon-xs" aria-label="다음 Step" disabled={stepIndex < 0 || stepIndex >= steps.length - 1} onClick={() => selectStep(steps[stepIndex + 1].viewId)}><ChevronRight /></Button>
+                <Button variant="ghost" size="icon-xs" aria-label="다음 Step" disabled={viewIndex < 0 || viewIndex >= views.length - 1} onClick={() => selectStep(views[viewIndex + 1].viewId)}><ChevronRight /></Button>
                 <select className="table-view-select" aria-label="표 선택" disabled={!run} value={tableView} onChange={(event) => setTableView(event.target.value)}>{tables.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
                 {visibleTable && <span className="pane-meta table-shape">{visibleTable.rows.length}행 × {visibleTable.columns.length}열</span>}
               </div>
               {step?.isCandidate && tableView === "output" && <div className="candidate-comparison-note">{step.viewLabel} · {originalStep ? `Step ${originalStep.order} 수정 전 결과와 비교` : "수정 후보 실행 결과"}</div>}
-              {visibleTable ? <WorkspaceTable key={`${observedVersion}:${step?.viewId}:${tableView}`} data={visibleTable} identity={`${observedVersion}:${step?.viewId}:${tableView}`} stage={condition === "in-situ" && tableView === "output" ? step : undefined}
-                comparison={step?.isCandidate ? originalStep?.table : undefined}
-                refreshing={!!busy} onRefresh={condition === "in-situ" && health?.api_configured && session && run ? refreshDescriptions : undefined} /> : <div className="pane-empty" />}
+              {condition === "in-situ" && !viewingOutput && tableView === "output" && !!step?.direct_tables?.length ? <div className="table-result-stack">
+                <div className="direct-table-result">{tableContent}</div>
+                <DirectUsedTables tables={step.direct_tables} identity={`${observedVersion}:${step.viewId}`} />
+              </div> : tableContent}
             </section>
           </div>
           {condition === "ex" && <>
             {separator("top", "코드·테이블과 설명 높이 조절")}
-            <ExSituExplanation step={step} number={step?.order ?? 0} label={step?.viewLabel} revision={step?.isCandidate ? preview : undefined} busy={!!busy}
-              error={step?.isCandidate ? preview?.explanation_error : run?.explanation_status === "failed" ? run.explanation_error : undefined}
-              onRefresh={health?.api_configured && session && run ? refreshDescriptions : undefined} />
+            <ExSituExplanation step={step} number={step?.order ?? 0} label={step?.viewLabel} />
           </>}
         </div>
         {separator("chat", "수정 요청 영역 너비 조절")}

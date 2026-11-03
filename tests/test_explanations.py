@@ -25,7 +25,7 @@ def bundle(run):
             'transformations':[{k:target[k] for k in ('step_no','transformation_no')}|{'text':'수량에 2를 곱해 계산합니다.'} for target in explanations.transformation_targets(run)]}
 
 
-def test_real_api_contract_code_only_cache_ignores_runtime_ids_and_detects_changed_data(monkeypatch,tmp_path):
+def test_real_api_contract_observed_diff_cache_ignores_runtime_ids_and_detects_changed_data(monkeypatch,tmp_path):
     monkeypatch.setenv('OPENAI_API_KEY','test-api-key');monkeypatch.setenv('OPENAI_MODEL','test-model')
     monkeypatch.setenv('TRACE_EXPLANATION_DIR',str(tmp_path))
     calls=[];run=snapshot()
@@ -34,11 +34,18 @@ def test_real_api_contract_code_only_cache_ignores_runtime_ids_and_detects_chang
         assert url.endswith('/responses') and json['store'] is False
         assert 'PRIVATE_INPUT_VALUE' not in json['input']
         payload=__import__('json').loads(json['input'])
-        assert set(payload)=={'code','steps','column_targets','transformation_targets'} and set(payload['steps'][0])=={'step_no','code','upstream_steps'}
+        assert set(payload)=={'code','steps','column_targets','transformation_targets','observed_changes'} and set(payload['steps'][0])=={'step_no','code','upstream_steps'}
+        observed=payload['observed_changes'][0]
+        assert observed['after']['sample'][0]['values']['total']==4
+        assert observed['changes'][0]['column']=='total'
         assert payload['column_targets'] and all(set(t)=={'step_no','operation_no','column','code','expression'} for t in payload['column_targets'])
         assert payload['code']==run['code']
+        data={k:bundle(run)[k] for k in ('steps','columns','transformations')}
+        data['change_links']=[{'step_no':item['step_no'],'change_id':event['id'],'status':'linked',
+            'operations':[{'candidate_id':event['candidate_ids'][0],'text':'수량에 2를 곱해 total 열을 만듭니다.'}]}
+            for item in payload['observed_changes'] for event in item['changes']]
         return httpx.Response(200,json={'status':'completed','id':'test-response','usage':{'total_tokens':123},
-            'output':[{'content':[{'type':'output_text','text':__import__('json').dumps({k:bundle(run)[k] for k in ('steps','columns','transformations')})}]}]})
+            'output':[{'content':[{'type':'output_text','text':__import__('json').dumps(data)}]}]})
     monkeypatch.setattr(httpx.Client,'post',post)
     a,cached=explanations.obtain(run);assert not cached
     other=copy.deepcopy(run);other['id']=str(uuid4());other['stages'][1]['id']=str(uuid4())

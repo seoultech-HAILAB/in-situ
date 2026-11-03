@@ -1,0 +1,71 @@
+import ast
+from copy import deepcopy
+
+from backend.engine import parse_table
+from backend.pipeline import prepare,assemble
+from backend.python_runtime import run as native_run
+from backend.transformations import annotate_run
+
+
+SOURCES={'rates':'key,rate\na,2\nb,3','unused':'key,note\na,unused'}
+
+
+def execute(code,groups=None):
+    groups=groups or [{'statement_indices':list(range(len(ast.parse(code).body))),'output_variable':'result'}]
+    plan=prepare(code,groups,engine='python')
+    stages,ops=assemble(native_run(code,parse_table('key,x\na,10\nb,20'),{k:parse_table(v) for k,v in SOURCES.items()},plan),plan)
+    return annotate_run(dict(id='run',code_version=1,code=code,pipeline=plan,stages=stages,operations=ops))
+
+
+def test_shows_only_current_join_input_with_its_actual_cleaned_values():
+    run=execute("main = input_df.copy()\nlookup = tables['rates'].copy()\nunused = tables['unused'].copy()\nlookup['rate'] = lookup['rate'] * 2\nresult = main.merge(lookup, on='key', how='left')")
+    stage=run['stages'][1];items=stage['direct_tables']
+    assert len(items)==1 and items[0]['name']=='lookup'
+    assert [row['values']['rate'] for row in items[0]['table']['rows']]==[4,6]
+    assert 'key' in items[0]['uses'][0]['text'] and '행을 유지' in items[0]['uses'][0]['text']
+    assert items[0]['uses'][0]['line']==5
+    snapshot=deepcopy(stage['table']);annotate_run(run)
+    assert stage['table']==snapshot and stage['direct_tables']==items
+
+
+def test_later_steps_do_not_repeat_a_previously_joined_source_table():
+    code="lookup = tables['rates'].copy()\nmerged = input_df.merge(lookup, on='key', how='left')\nresult = merged.sort_values('x')"
+    run=execute(code,[{'statement_indices':[0,1],'output_variable':'merged'},{'statement_indices':[2],'output_variable':'result'}])
+    assert len(run['stages'][1]['direct_tables'])==1
+    assert run['stages'][2]['direct_tables']==[]
+
+
+def test_unused_side_branch_and_unexecuted_join_do_not_get_cards():
+    run=execute("unused = input_df.merge(tables['rates'], on='key')\nif False:\n    unused = input_df.merge(tables['unused'], on='key')\nresult = input_df.copy()")
+    assert run['stages'][1]['direct_tables']==[]
+
+
+def test_precomputed_scalar_influence_does_not_count_as_direct_table_use():
+    code="rates = tables['rates'].copy()\nfactor = rates['rate'].mean()\nresult = input_df.copy()\nresult['scaled'] = result['x'] * factor"
+    run=execute(code,[{'statement_indices':[0,1],'output_variable':'rates'},{'statement_indices':[2,3],'output_variable':'result'}])
+    assert run['stages'][2]['direct_tables']==[]
+
+
+def test_direct_read_of_existing_lookup_frame_counts_as_use_in_calculation():
+    code="rates = tables['rates'].copy()\nresult = input_df.copy()\nresult['scaled'] = result['x'] * rates['rate']"
+    run=execute(code,[{'statement_indices':[0],'output_variable':'rates'},{'statement_indices':[1,2],'output_variable':'result'}])
+    assert len(run['stages'][2]['direct_tables'])==1
+    assert run['stages'][2]['direct_tables'][0]['name']=='rates'
+    assert '결과 열 계산' in run['stages'][2]['direct_tables'][0]['uses'][0]['text']
+
+
+def test_conservative_whole_step_input_lists_never_prove_table_use():
+    run=execute("result = input_df.copy()\nresult['x'] = result['x'].map(lambda value: value * 2)")
+    stage=run['stages'][1]
+    assert stage['trace_level']=='common'
+    stage['operation_observations']=[]
+    stage['operations'][0]['inputs'].append({'ref':'source:rates','variable':'rates','table':stage['table']})
+    annotate_run(run)
+    assert stage['direct_tables']==[]
+
+
+def test_concat_shows_each_additional_input_once_with_direction():
+    run=execute("extra = tables['rates'][['key']]\nmain = input_df[['key']]\nresult = pd.concat([main, extra], ignore_index=True)")
+    assert len(run['stages'][1]['direct_tables'])==1
+    assert run['stages'][1]['direct_tables'][0]['name']=='extra'
+    assert '행' in run['stages'][1]['direct_tables'][0]['uses'][0]['text']

@@ -63,10 +63,13 @@ test('type conversions color existing cells yellow even if the serialized value 
 
 test('untraced observation IDs never masquerade as verified edited rows', () => {
   const diff = workspaceDiff(stage(table(['x'], [['a',{x:1}]]), table(['x'], [['a',{x:2}]]), {trace_level:'common'}));
-  assert.deepEqual(diff.rows.map(r => r.kind), ['added','removed']);
+  assert.deepEqual(diff.rows.map(r => r.kind), [undefined,undefined]);
+  assert.deepEqual(diff.rows.map(r => r.observation), ['after','before']);
+  assert.equal(diff.removedRows,0);
+  assert.equal(diff.rowCorrespondenceKnown,false);
   assert.equal(new Set(diff.rows.map(r => r.key)).size, 2);
   const unknown = workspaceDiff(stage(table(['x'], [['a',{x:1}]]), table(['x'], [['a',{x:2}]]), {kind:'unknown'}));
-  assert.deepEqual(unknown.rows.map(r => r.kind), ['added','removed']);
+  assert.deepEqual(unknown.rows.map(r => r.kind), [undefined,undefined]);
 });
 
 test('a composite Step compares against its main consumed input, not an unrelated preparation table', () => {
@@ -158,4 +161,77 @@ test('revision highlights match the separate verified before/after comparison', 
   assert.deepEqual(transformations(s,{kind:'changed',column:'z'}),[]);
   assert.deepEqual(transformations(s,{kind:'changed',column:'z',revision:true}).map(item=>item.id),['derive']);
   assert.deepEqual(transformations(s,{kind:'added',column:'z',revision:true}),[]);
+});
+
+test('verified statement correspondence identifies only actually deleted rows in a common Step', () => {
+  const input=table(['x','y'],[['a',{x:1,y:10}],['b',{x:2,y:20}],['c',{x:3,y:30}]]);
+  const output=table(['x'],[['new-c',{x:3}],['new-a',{x:1}]]);
+  const selected=stage(input,output,{kind:'python',trace_level:'common',row_correspondence_complete:true,row_correspondence:{'new-c':'c','new-a':'a'}});
+  const diff=workspaceDiff(selected);
+  assert.deepEqual(diff.rows.filter(row=>row.kind==='removed').map(row=>row.id),['b']);
+  assert.equal(diff.removedRows,1);
+  assert.deepEqual(diff.rows.filter(row=>row.kind!=='removed').map(row=>row.cells.y.value),[30,10]);
+  assert.ok(diff.rows.filter(row=>row.kind!=='removed').every(row=>row.kind==='changed'));
+  assert.deepEqual(diff.rows.filter(row=>row.kind!=='removed').map(row=>row.cells.x.kind),[undefined,undefined]);
+});
+
+test('global Step search exposes only matching removal candidates, never unrelated code', () => {
+  const removed=effect('removed','y',['a']);removed.attribution='step-search-candidate';
+  const selected=stage(null,table(['x'],[]),{execution_version:'run-2',code_version:2,transformations:[
+    sourceTransform('selection','x','result[keep]',{kind:'select',execution_effects:[removed]}),
+    sourceTransform('sort','x','result.sort_values(...)',{kind:'sort',execution_effects:[effect('changed',null,['a'])]}),
+  ]});
+  const choices=transformations(selected,{kind:'removed',column:'y'});
+  assert.deepEqual(choices.map(item=>item.id),['selection']);
+  assert.equal(choices[0].candidates,true);
+  assert.deepEqual(transformations(selected,{kind:'removed',column:'unknown'}),[]);
+});
+
+test('unknown row correspondence does not create row events but actual schema changes remain clickable', () => {
+  const input=table(['x','Location'],[['old',{x:1,Location:'A'}]]);
+  const output=table(['x','City'],[['new',{x:1,City:'A'}]]);
+  const selected=stage(input,output,{trace_level:'common',execution_version:'run-2',code_version:2,transformations:[
+    sourceTransform('City','City',"df['City'] = parts[0].str.strip()",{method:'assignment',execution_effects:[effect('added','City',['new'])]}),
+    sourceTransform('select','x',"df[['x','City']]",{kind:'select',execution_effects:[effect('removed','Location',['internal-row'])]}),
+  ]});
+  const diff=workspaceDiff(selected);
+  assert.ok(diff.rows.every(row=>row.kind===undefined));
+  assert.equal(diff.removedRows,0);
+  assert.deepEqual(diff.rows.map(row=>row.observation),['after','before']);
+  assert.equal(diff.rows[0].cells.x.kind,undefined);
+  assert.equal(diff.rows[0].cells.City.kind,'added');
+  assert.equal(diff.rows[1].cells.Location.kind,'removed');
+  assert.deepEqual(transformations(selected,{kind:'added',column:'City',row:diff.rows[0]}).map(item=>item.id),['City']);
+  assert.deepEqual(transformations(selected,{kind:'removed',column:'Location',row:diff.rows[1]}).map(item=>item.id),['select']);
+});
+
+test('an actual column assignment takes precedence over its nested Series code for City creation', () => {
+  const selected=stage(null,table(['City'],[]),{execution_version:'run-2',code_version:2,transformations:[
+    sourceTransform('strip','City','parts[0].str.strip()',{statement_index:4,execution_effects:[effect('added','City')]}),
+    sourceTransform('assignment','City',"df['City'] = parts[0].str.strip()",{method:'assignment',statement_index:4,execution_effects:[effect('added','City')]}),
+  ]});
+  assert.deepEqual(transformations(selected,{kind:'added',column:'City'}).map(item=>item.id),['assignment']);
+  assert.deepEqual(transformations(selected,{kind:'removed',column:'Location'}),[]);
+});
+
+test('observed-change LLM code wins only for its exact change; unresolved changes retain verified operations', () => {
+  const selected=stage(null,table(['City'],[]),{execution_version:'run-2',code_version:2,transformations:[
+    sourceTransform('strip','City','parts[0].str.strip()',{execution_effects:[effect('added','City',['a'])]}),
+    sourceTransform('mapped','City',"df['City'] = parts[0].str.strip()",{method:'observed_change',mapping_status:'matched',execution_effects:[effect('added','City',['a'])]}),
+    sourceTransform('delete','x',"df[['City']]",{kind:'select',execution_effects:[effect('removed','Location',['a'])]}),
+  ]});
+  assert.deepEqual(transformations(selected,{kind:'added',column:'City',row:{id:'a'}}).map(t=>t.id),['mapped']);
+  assert.equal(transformations(selected,{kind:'added',column:'City'})[0].mapping,'matched');
+  assert.deepEqual(transformations(selected,{kind:'removed',column:'Location'}).map(t=>t.id),['delete']);
+  assert.deepEqual(transformations(selected,{kind:'changed',column:'City'}),[]);
+});
+
+test('Step-only LLM associations are marked as candidates and do not bypass revision matching', () => {
+  const observed=effect('added','City',['a']);observed.attribution='llm-step-candidate';
+  const selected=stage(null,table(['City'],[]),{execution_version:'run-2',code_version:2,transformations:[
+    sourceTransform('mapped','City',"df['City'] = calculate()",{method:'observed_change',mapping_status:'candidate',execution_effects:[observed]}),
+  ]});
+  const items=transformations(selected,{kind:'added',column:'City'});
+  assert.equal(items[0].candidates,true);assert.equal(items[0].mapping,'candidate');
+  assert.deepEqual(transformations(selected,{kind:'changed',column:'City',revision:true}),[]);
 });

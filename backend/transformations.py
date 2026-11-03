@@ -8,8 +8,10 @@ import copy
 import hashlib
 import json
 from .transformation_effects import bind as bind_execution_effects
+from .statement_observations import VERSION as OBSERVATIONS_VERSION
+from .operation_prose import operation_local_text
 
-VERSION = 'ast-transformations-v2'
+VERSION = 'ast-transformations-v3'
 METHODS = {
     'assign':'derive', 'astype':'convert', 'to_numeric':'convert', 'to_datetime':'convert',
     'map':'derive', 'apply':'derive', 'applymap':'derive', 'transform':'derive',
@@ -87,6 +89,7 @@ def description(method, kind, node, targets):
         if isinstance(node,ast.AugAssign):value=ast.BinOp(left=node.target,op=node.op,right=node.value)
         return f'{readable(value)}을 {quoted(targets) or "출력"}에 저장합니다.'
     if method == 'select': return f'{quoted(targets)} 열을 선택합니다.'
+    if method == 'selection': return '코드에 지정한 행·열만 선택해 결과에 남깁니다.'
     if method in ('astype', 'to_numeric', 'to_datetime'):
         dtype = {'str':'문자열', 'int':'정수', 'float':'실수', 'bool':'참·거짓', "'str'":'문자열', "'int'":'정수', "'float'":'실수'}.get(first, first or '지정한 자료형')
         if method == 'to_numeric': dtype = '숫자'
@@ -133,10 +136,12 @@ def extract(code, indices, tree=None, output_variable=None):
     tree = tree or ast.parse(code)
     helpers = {n.name:n for n in tree.body if isinstance(n, ast.FunctionDef)}
     found = []; bindings = {}; active = set()
+    column_lists=set()
     for node in tree.body:
         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
             literal = strings(node.value)
             if literal: bindings[node.targets[0].id] = literal
+            if isinstance(node.value,(ast.List,ast.Tuple)):column_lists.add(node.targets[0].id)
 
     def emit(node, kind, method, targets, variable, statement, callsite=None):
         loc = location(node); text = ast.get_source_segment(code, node) or ''
@@ -147,7 +152,7 @@ def extract(code, indices, tree=None, output_variable=None):
         item = {'kind':kind, 'method':method, 'code':text, 'code_location':loc,
                 'output_columns':list(dict.fromkeys(targets)), 'input_columns':inputs,
                 'output_variable':variable, 'statement_index':statement,
-                'row_effect':'remove' if kind == 'filter' else 'reorder' if kind == 'sort' else 'reshape' if kind in ('aggregate','merge','reshape','construct') else None,
+                'row_effect':'remove' if kind == 'filter' or method=='selection' else 'reorder' if kind == 'sort' else 'reshape' if kind in ('aggregate','merge','reshape','construct') else None,
                 'description':{'text':description(method, kind, node, targets), 'source':'ast'},
                 'syntax_only':True}
         if callsite is not None: item['call_location'] = location(callsite)
@@ -193,6 +198,11 @@ def extract(code, indices, tree=None, output_variable=None):
             selector = node.slice.elts[0] if isinstance(node.slice, ast.Tuple) else node.slice
             if isinstance(selector, (ast.Compare, ast.BoolOp, ast.BinOp, ast.UnaryOp)) or isinstance(selector, ast.Call):
                 emit(node, 'filter', 'filter', [], variable, statement, callsite)
+            elif isinstance(selector,ast.Name) and selector.id in column_lists:
+                emit(node,'select','select',strings(selector,bindings),variable,statement,callsite)
+            elif isinstance(selector,ast.Name) and not strings(selector,bindings) or isinstance(node.value,ast.Attribute) and node.value.attr in ('loc','iloc') and not (
+                isinstance(selector,ast.Slice) and selector.lower is None and selector.upper is None and selector.step is None):
+                emit(node,'select','selection',[],variable,statement,callsite)
             elif isinstance(node.slice, (ast.List, ast.Tuple)):
                 if not (isinstance(node.value,ast.Attribute) and node.value.attr in ('loc','iloc')):
                     emit(node, 'select', 'select', columns(node, bindings), variable, statement, callsite)
@@ -268,6 +278,8 @@ def annotate_run(run):
     try: tree = ast.parse(code)
     except SyntaxError: return run
     code_hash=hashlib.sha256(code.encode()).hexdigest()
+    all_columns={str(column) for stage in run.get('stages',[]) for node in [stage,*stage.get('operations',[])]
+                 for observed in (node.get('input'),node.get('table')) if observed for column in observed['columns']}
     current=(run.get('transformations_version')==VERSION and run.get('transformations_code_hash')==code_hash)
     if not current:
         # Invalidate persisted prose from the previous explanation policy.
@@ -280,6 +292,7 @@ def annotate_run(run):
                 for spec in run['pipeline'].get('steps',[])]}
     plan = run.get('pipeline', {}).get('steps', [])
     for stage in run.get('stages', [])[1:]:
+        stage.pop('observed_change_status',None)
         spec = next((s for s in plan if s['id'] == stage['id']), None)
         if spec: indices = spec['statement_indices']
         else:
@@ -287,18 +300,44 @@ def annotate_run(run):
             indices = [i for i,n in enumerate(tree.body) if loc.get('start', 0) <= n.lineno <= loc.get('end', -1)]
         output = stage.get('output_variable') or (spec or {}).get('observed_output_variable') or (spec or {}).get('output_variable')
         fresh = extract(code, indices, tree, output_variable=output)
+        for observation in stage.get('operation_observations',[]):
+            if observation.get('kind')!='assignment':continue
+            loc=observation['code_location'];snippet=observation['code'];written=observation['written_columns']
+            existing=next((item for item in fresh if item['code']==snippet and item['code_location']['start']==loc['start'] and item['code_location']['start_column']==loc['start_column']),None)
+            if existing:
+                existing['method']='assignment'
+                existing['output_columns']=written
+                continue
+            value=next((node.value for node in ast.walk(tree) if isinstance(node,(ast.Assign,ast.AnnAssign,ast.AugAssign)) and node.lineno==loc['start'] and node.col_offset==loc['start_column']),None)
+            target=quoted(written)
+            if isinstance(value,ast.Call) and isinstance(value.func,ast.Attribute) and value.func.attr=='strip':
+                text=f'선택한 값의 양끝 공백을 제거해 {target} 열에 저장합니다.'
+            else:text=f'{readable(value)}을 {target} 열에 저장합니다.'
+            contributing=any(item['statement_index']==observation['statement_index'] and item.get('contributes_to_output') is not False for item in fresh)
+            fresh.append({'id':'transform-assignment-'+hashlib.sha256(json.dumps([loc,snippet,written],sort_keys=True).encode()).hexdigest()[:16],
+                'kind':'derive','method':'assignment','code':snippet,'code_location':loc,'output_columns':written,'input_columns':[],
+                'output_variable':observation['output_variable'],'statement_index':observation['statement_index'],
+                'row_effect':None,'description':{'text':text,'source':'ast'},'syntax_only':False,'contributes_to_output':contributing})
         if not current:
             stage.pop('nl_explanation',None);stage.pop('column_explanations',None)
             stage['operations']=[{k:v for k,v in op.items() if k not in ('nl_explanation','column_explanations')} for op in stage.get('operations',[])]
+        fresh=bind_execution_effects(fresh,stage,tree)
         old = {t['id']:t for t in stage.get('transformations', [])} if current else {}
         for item in fresh:
+            item['ast_description']=item['description']['text']
             prior = old.get(item['id'])
-            if prior and prior.get('code') == item['code'] and prior.get('execution_version') == run.get('id') and prior.get('code_version') == run.get('code_version'):
+            if prior and prior.get('code') == item['code'] and prior.get('execution_version') == run.get('id') and prior.get('code_version') == run.get('code_version') and operation_local_text(prior['description']['text'],item,all_columns):
                 item['description'] = copy.deepcopy(prior['description'])
             item['execution_version'] = run.get('id'); item['code_version'] = run.get('code_version')
-        stage['transformations'] = bind_execution_effects(fresh,stage,tree); stage['transformations_version'] = VERSION
+        stage['transformations'] = fresh; stage['transformations_version'] = VERSION
     run['transformations_version'] = VERSION
     run['transformations_code_hash'] = code_hash
+    if run.get('pipeline',{}).get('engine')=='capability' or all(stage.get('execution_observations_version')==OBSERVATIONS_VERSION for stage in run.get('stages',[])[1:]):
+        run['execution_observations_version']=OBSERVATIONS_VERSION
+    from .observed_changes import restore
+    restore(run)
+    from .direct_tables import annotate as annotate_direct_tables
+    annotate_direct_tables(run)
     return run
 
 
@@ -306,4 +345,4 @@ def targets(run):
     run = {**run, 'stages':[dict(stage) for stage in run.get('stages', [])]}
     annotate_run(run)
     return [{'step_no':i, 'transformation_no':j, **{k:t[k] for k in ('kind','code','code_location','output_columns','input_columns')}}
-            for i,s in enumerate(run.get('stages', [])[1:], 1) for j,t in enumerate(s.get('transformations', []), 1)]
+            for i,s in enumerate(run.get('stages', [])[1:], 1) for j,t in enumerate([t for t in s.get('transformations', []) if t.get('method')!='observed_change'], 1)]

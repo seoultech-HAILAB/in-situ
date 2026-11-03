@@ -19,6 +19,7 @@ import pandas as pd
 
 from .runtime import Frame, Interpreter, Unsupported, clean, digest, run as traced_run, table
 from .python_provenance import ProvenanceInterpreter
+from .statement_observations import Observations, snapshot as observation_snapshot, VERSION as OBSERVATIONS_VERSION
 
 MODULES=('pandas','numpy','math','re','datetime','statistics','collections','itertools','functools')
 # datetime's native strftime/strptime call __import__ for these trusted helpers.
@@ -142,10 +143,35 @@ def run(code,frame,sources,plan):
         if not names:names=[next(reversed(before))]
         inputs=[{'ref':owners.get(k,'input'),'variable':k,'table':checked(before[k],identities[k])} for k in names]
         previous={k:v.copy(deep=True) for k,v in before.items()}
+        observations=Observations(code,spec,identities)
+        statement_snapshots=[]
+        observation_bytes=0;complete_observations=True
         try:
             output=io.StringIO()
             with redirect_stdout(output):
-                exec(compile(ast.Module(body=nodes,type_ignores=[]),'<trace-program>','exec'),env,env)
+                for statement_index,node in zip(indices,nodes):
+                    observed_names={n.id for n in ast.walk(node) if isinstance(n,ast.Name)}
+                    for helper in list(observed_names):observed_names.update(helper_names.get(helper,set()))
+                    observed_before=None
+                    if complete_observations:
+                        try:observed_before=observation_snapshot(env,observed_names)
+                        except Exception:complete_observations=False
+                    executed_lines=set()
+                    old_trace=sys.gettrace()
+                    def record_line(frame,event,arg):
+                        if event=='line' and frame.f_code.co_filename=='<trace-program>':executed_lines.add(frame.f_lineno)
+                        return record_line
+                    try:
+                        if complete_observations:sys.settrace(record_line)
+                        exec(compile(ast.Module(body=[node],type_ignores=[]),'<trace-program>','exec'),env,env)
+                    finally:sys.settrace(old_trace)
+                    if complete_observations:
+                        try:
+                            observed_after=observation_snapshot(env,observed_names)
+                            observation_bytes+=observed_before['bytes']+observed_after['bytes']
+                            if observation_bytes>16_000_000:complete_observations=False
+                            else:statement_snapshots.append((node,statement_index,observed_before,observed_after,executed_lines))
+                        except Exception:complete_observations=False
             after=frames(env);name=spec.get('output_variable')
             observation_only=False
             if spec.get('output_explicit') and name not in after:
@@ -209,6 +235,13 @@ def run(code,frame,sources,plan):
                 written={n.id for node in nodes for n in ast.walk(node) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Store)}
                 for key in written:tracer.env.pop(key,None)
             last['stdout']=output.getvalue()[:10000]
+            try:
+                for observation in statement_snapshots:observations.observe(*observation)
+                observations.finish(last,name,inputs,complete_observations)
+            except Exception:
+                last['operation_observations']=observations.records
+                last['execution_observations_version']=OBSERVATIONS_VERSION
+                last['execution_observations_limited']=True
             last['execution_backend']='native-python';last['native_verified']=True
             spec['observed_output_variable']=name
             for key,df in after.items():

@@ -36,11 +36,12 @@ export function sourceSnippet(source: string | undefined, fallback: string, loca
   return location.end <= lines.length ? lines.slice(location.start-1,location.end).join('\n') : fallback;
 }
 
-export function PythonCode({ code, focus, startLine = 1 }: { code: string; focus?: string; startLine?: number }) {
+export function PythonCode({ code, focus, startLine = 1, plain = false }: { code: string; focus?: string; startLine?: number; plain?: boolean }) {
   const content=useMemo(()=>{
+    if (plain) return code;
     const start = focus ? code.lastIndexOf(focus) : -1;
     return start < 0 || !focus ? highlight(code) : [<span key="before">{highlight(code.slice(0,start))}</span>, <mark className="python-focus" key="focus">{highlight(focus)}</mark>, <span key="after">{highlight(code.slice(start+focus.length))}</span>];
-  },[code,focus]);
+  },[code,focus,plain]);
   const lineCount = code.split(/\r\n|\r|\n/).length;
   return <pre className="python-code" aria-label="읽기 전용 Python 코드">
     <span className="python-line-numbers" aria-hidden="true">{Array.from({ length: lineCount }, (_, index) => <span key={index}>{startLine+index}</span>)}</span>

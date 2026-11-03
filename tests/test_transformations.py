@@ -46,7 +46,7 @@ def test_common_trace_gets_source_annotations_without_fabricating_cell_lineage()
     run=snapshot(code)
     stage=run['stages'][1]
     assert stage['trace_level']=='common'
-    assert [t['output_columns'] for t in stage['transformations']]==[['x'],['y']]
+    assert [t['output_columns'] for t in stage['transformations'] if t['method']=='assignment']==[['x'],['y']]
     assert all(t['execution_version']==run['id'] for t in stage['transformations'])
     assert not any(refs for cols in stage['lineage'].values() for refs in cols.values())
     assert stage['table']['rows'][0]['values']=={'x':4,'y':10}
