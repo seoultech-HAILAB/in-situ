@@ -25,6 +25,7 @@ import {
   isExplained,
   ownerOf,
   PythonCode,
+  sourceSnippet,
   referencedOutputs,
   reviewGroups,
   stepTitle,
@@ -246,7 +247,7 @@ export function Review(props: {
                   <section className="min-w-0 space-y-2">
                     <h3 className="text-sm font-medium">코드</h3>
                     <div className="max-h-[480px] overflow-auto rounded-md border bg-muted/40">
-                      <PythonCode code={step.code} />
+                      <PythonCode code={sourceSnippet(run?.code, step.code, step.code_location)} startLine={step.code_location?.start ?? 1} />
                     </div>
                   </section>
                   <section className="min-w-0 space-y-2">

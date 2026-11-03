@@ -3,6 +3,7 @@ import json
 import os
 from typing import Protocol
 import httpx
+from .connection_errors import api_connection_error
 from pydantic import BaseModel, Field
 
 DEFAULT_MODEL='gpt-6-luna' # Verified 2026-10-29: https://developers.openai.com/api/docs/models
@@ -191,4 +192,4 @@ class OpenAIGenerator:
             if body.get('status')!='completed' or not texts: raise ValueError('LLM 응답이 완료되지 않았거나 코드가 없습니다.')
             return Proposal.model_validate_json(''.join(texts))
         except httpx.TimeoutException as exc: raise ValueError('LLM API 응답 시간(90초) 초과') from exc
-        except httpx.RequestError as exc: raise ValueError('LLM API 연결 실패') from exc
+        except httpx.RequestError as exc: raise ValueError(api_connection_error(exc)) from exc

@@ -91,3 +91,34 @@ test('deleted row explanations resolve the actual filter rather than a later der
   const deleted = workspaceDiff(s).rows.find(r=>r.kind==='removed');
   assert.deepEqual(transformations(s,{kind:'removed',row:deleted}).map(t=>t.code),[filter.code]);
 });
+
+const sourceTransform = (id, column, code, extra={}) => ({id,kind:'derive',method:'apply',code,output_columns:[column],input_columns:[column],code_location:{start:3,end:3,start_column:4,end_column:30},description:{text:`${column}만 계산한 설명`,source:'llm'},syntax_only:true,execution_version:'run-2',code_version:2,...extra});
+test('common-trace selections use column-specific AST code and prose instead of the global Step operation', () => {
+  const input=table(['x','y'],[['a',{x:1,y:2}]]);
+  const s=stage(input,input,{trace_level:'common',execution_version:'run-2',code_version:2,code:'entire step code',
+    transformations:[sourceTransform('x','x','x.apply(...)'),sourceTransform('y','y','y.map(...)')]});
+  const selected=transformations(s,{kind:'changed',column:'y'});
+  assert.deepEqual(selected.map(t=>t.code),['y.map(...)']);
+  assert.equal(selected[0].text,'y만 계산한 설명');
+  assert.equal(selected[0].source,'llm');
+});
+test('unresolved source correspondence offers explicit candidates; stale run metadata is never shown', () => {
+  const s=stage(null,table(['z'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('x','x','exact expression')]});
+  assert.equal(transformations(s,{kind:'added',column:'z'})[0].candidates,true);
+  s.transformations[0].execution_version='run-1';
+  assert.deepEqual(transformations(s,{kind:'added',column:'z'}),[]);
+  s.transformations=[];
+  assert.deepEqual(transformations(s,{kind:'added',column:'z'}),[], 'no fallback to entire Step');
+});
+test('deleted row source selection isolates the filter from unrelated derived columns', () => {
+  const s=stage(null,table(['x'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('x','x','calculate x'),sourceTransform('filter','', 'df[df.x > 1]',{kind:'filter',output_columns:[],row_effect:'remove'})]});
+  assert.deepEqual(transformations(s,{kind:'removed',row:{kind:'removed',cells:{},number:1}}).map(t=>t.code),['df[df.x > 1]']);
+});
+
+test('upstream definitions enrich the explanation without becoming selectable edit operations', () => {
+  const context={version:'source-dependencies-v1',original_columns:[{table:'input_df',column:'Location'}],definitions:[{symbol:'parts',code:"parts = input_df['Location'].str.split(',')",code_location:{start:2,end:2},read_only:true}],text:'Location을 분할하고 첫 부분의 공백을 제거해 City를 만듭니다.',complete:true,unresolved:[]};
+  const s=stage(null,table(['City'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('city','City','parts[0].str.strip()',{source_context:context,code_location:{start:11,end:11}})]});
+  const choices=transformations(s,{kind:'added',column:'City'});
+  assert.equal(choices.length,1);assert.equal(choices[0].id,'city');assert.equal(choices[0].line.start,11);
+  assert.equal(choices[0].code,'parts[0].str.strip()');assert.equal(choices[0].context.definitions[0].code_location.start,2);
+});

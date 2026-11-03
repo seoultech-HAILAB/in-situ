@@ -1,4 +1,4 @@
-import type { CellValue, Row, Stage, Table } from "../../../src/types";
+import type { CellValue, Row, Stage, Table, SourceContext } from "../../../src/types";
 
 export type ChangeKind = "added" | "changed" | "removed";
 export type DiffColumn = { name: string; kind?: ChangeKind };
@@ -6,7 +6,7 @@ export type DiffCell = { value: CellValue | undefined; before?: CellValue; after
 export type DiffRow = { key: string; id: string; number: number; kind?: ChangeKind; cells: Record<string, DiffCell> };
 export type WorkspaceDiff = { columns: DiffColumn[]; rows: DiffRow[]; before: Table | null; removedRows: number; removedColumns: number };
 export type ChangeTarget = { kind: ChangeKind; row?: DiffRow; column?: string; cell?: DiffCell };
-export type Transformation = { code: string; text: string; line?: { start: number; end: number } };
+export type Transformation = { id?: string; code: string; text: string; focus?: string; source?: string; context?: SourceContext; outputColumns?: string[]; candidates?: boolean; line?: { start: number; end: number; start_column?: number; end_column?: number; start_character?: number } };
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const owns = (row: Row | undefined, column: string) => !!row && Object.hasOwn(row.values, column);
@@ -133,6 +133,16 @@ function observedDescription(operation: Stage, target: ChangeTarget): string {
 }
 
 export function transformations(stage: Stage, target: ChangeTarget): Transformation[] {
+  if (stage.transformations) {
+    const available = stage.transformations.filter(item => item.contributes_to_output !== false && (!item.execution_version || item.execution_version === stage.execution_version) && (!item.code_version || item.code_version === stage.code_version));
+    const columns = target.column ? [target.column] : Object.entries(target.row?.cells || {}).filter(([, cell]) => !!cell.kind).map(([name]) => name);
+    const columnMatches = available.filter(item => item.output_columns.some(name => columns.includes(name)));
+    const inputMatches = available.filter(item => item.input_columns.some(name => columns.includes(name)) && ["convert", "derive", "drop", "rename", "select"].includes(item.kind));
+    const rowMatches = available.filter(item => target.row?.kind === "removed" ? item.row_effect === "remove" : target.row?.kind === "added" ? item.row_effect === "reshape" : item.row_effect === "reorder");
+    const matches = target.row?.kind === "removed" && rowMatches.length ? rowMatches : columnMatches.length ? columnMatches : inputMatches.length ? inputMatches : rowMatches;
+    return (matches.length ? matches : available).map(item => ({ id: item.id, code: item.code, text: item.description.text, source: item.description.source,
+      focus: item.focus_code, line: item.code_location, context: item.source_context, outputColumns: item.output_columns, candidates: !matches.length }));
+  }
   const operations = stage.operations?.filter(op => operationAffects(op, target)) || [];
   const nodes = operations.length ? operations : [stage];
   const seen = new Set<string>();

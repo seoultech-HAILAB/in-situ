@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { ArrowUp, Check, ChevronLeft, ChevronRight, Download, LoaderCircle, Play, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { api as traceApi, PythonCode, taskLabel, type Health, type Session, type TaskInput, type TaskSummary } from "@/lib/trace";
+import { api as traceApi, PythonCode, sourceSnippet, taskLabel, type Health, type Session, type TaskInput, type TaskSummary } from "@/lib/trace";
 import { WorkspaceTable } from "./workspace-table";
+import type { Transformation } from "./workspace-diff";
 
 type Scope = "step" | "pipeline";
 type Message = { id: string; request: string; response: string; failed?: boolean };
@@ -39,6 +40,14 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   const step = steps.find((stage) => stage.id === stepId) ?? steps[0];
   const stepIndex = steps.findIndex((stage) => stage.id === step?.id);
   const taskChanged = !!session && taskId !== session.task_id;
+  const [editTarget,setEditTarget] = useState<{id:string;step:string;run:string;line?:number} | null>(null);
+  const selectedOperation = editTarget?.step === step?.id && editTarget?.run === run?.id ? editTarget : null;
+  useEffect(() => { setEditTarget(null); }, [run?.id,step?.id]);
+  const selectTransformation = useCallback((item: Transformation) => {
+    if (!item.id || !run || !step) return;
+    setEditTarget(current => current && current.id === item.id && current.run === run.id ? current : {id:item.id!,step:step.id,run:run.id,line:item.line?.start});
+    setScope("step");
+  }, [run?.id,step?.id]);
 
   function accept(next: Session) {
     setSession(next);
@@ -137,7 +146,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
       try {
         const next = await api<Session>(`/sessions/${session.id}/generate`, {
           request: text, scope, base_run_id: run.id,
-          context: { step_id: step.id, selection: null },
+          context: { step_id: step.id, selection: null, ...(selectedOperation ? {transformation_id:selectedOperation.id,execution_version:run.id} : {}) },
         });
         accept(next);
         if (next.status !== "ready") throw new Error(next.error?.message || "수정을 적용하지 못했습니다. 다시 요청해 주세요.");
@@ -227,7 +236,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
                   <button className="code-step-heading" aria-label={`Step ${index + 1} 선택`} aria-pressed={stage.id === step?.id} onClick={() => selectStep(stage.id)}>
                     <span>Step {String(index + 1).padStart(2, "0")}</span><span className="step-line-range">{stage.code_location ? `L${stage.code_location.start}–${stage.code_location.end}` : ""}</span>
                   </button>
-                  <div className="step-code" onClick={() => selectStep(stage.id)}><PythonCode code={stage.code} /></div>
+                  <div className="step-code" onClick={() => selectStep(stage.id)}><PythonCode code={sourceSnippet(run?.code, stage.code, stage.code_location)} startLine={stage.code_location?.start ?? 1} /></div>
                 </article>)}
                 {!steps.length && <div className="pane-empty" role="status">{booting ? "불러오는 중…" : busy || "과제를 선택하고 실행하세요."}</div>}
               </div>
@@ -244,7 +253,12 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
                 <select className="table-view-select" aria-label="표 선택" disabled={!run} value={tableView} onChange={(event) => setTableView(event.target.value)}>{tables.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
                 {visibleTable && <span className="pane-meta table-shape">{visibleTable.rows.length}행 × {visibleTable.columns.length}열</span>}
               </div>
-              {visibleTable ? <WorkspaceTable key={`${run?.id}:${step?.id}:${tableView}`} data={visibleTable} identity={`${run?.id}:${step?.id}:${tableView}`} stage={condition === "in-situ" && tableView === "output" ? step : undefined} /> : <div className="pane-empty" />}
+              {visibleTable ? <WorkspaceTable key={`${run?.id}:${step?.id}:${tableView}`} data={visibleTable} identity={`${run?.id}:${step?.id}:${tableView}`} stage={condition === "in-situ" && tableView === "output" ? step : undefined}
+                onTransformationSelect={selectTransformation} refreshing={!!busy} onRefresh={condition === "in-situ" && health?.api_configured && session && run ? () => void perform("변환 설명 갱신", async () => {
+                  const next = await api<Session>(`/sessions/${session.id}/explanations`, { run_id: run.id, refresh_transformations: true });
+                  accept(next);
+                  if (next.run?.explanation_status === "failed") throw new Error(next.run.explanation_error || "변환 설명을 갱신하지 못했습니다.");
+                }) : undefined} /> : <div className="pane-empty" />}
             </section>
           </div>
           {separator("top", "아래 빈 영역 높이 조절")}
@@ -264,11 +278,12 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
             {session?.status === "failed" && !pending && <p className="composer-note" role="status">실행에 실패했습니다. 마지막 성공 결과를 표시합니다.</p>}
             {health && !health.api_configured && <p className="composer-note">수정 요청을 사용하려면 서버의 .env에 API 키를 설정하세요.</p>}
             <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); revise(); }}>
+              {selectedOperation && <div className="composer-target"><span>수정 대상 · 현재 연산{selectedOperation.line ? ` L${selectedOperation.line}` : ""}</span><button type="button" aria-label="연산 선택 해제" onClick={() => setEditTarget(null)}><X size={12} /></button></div>}
               <textarea ref={composer} aria-label="수정 요청 입력" placeholder="수정할 내용을 입력하세요" value={request} rows={3} maxLength={5000} disabled={!run || !!busy || taskChanged}
                 onChange={(event) => { setRequest(event.target.value); event.target.style.height = "auto"; event.target.style.height = `${Math.min(220, event.target.scrollHeight)}px`; }}
                 onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); revise(); } }} />
               <div className="composer-tools"><select aria-label="수정 범위" disabled={!run || !!busy} value={scope} onChange={(event) => setScope(event.target.value as Scope)}>
-                <option value="step">Step {stepIndex >= 0 ? String(stepIndex + 1).padStart(2, "0") : ""}</option><option value="pipeline">전체 코드</option>
+                <option value="step">{selectedOperation ? "현재 연산" : `Step ${stepIndex >= 0 ? String(stepIndex + 1).padStart(2, "0") : ""}`}</option><option value="pipeline">전체 코드</option>
               </select><Button type="submit" size="icon-sm" aria-label="수정 요청 보내기" title="보내기 · Enter" disabled={!canSend}>{pending ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div>
             </form>
           </div>

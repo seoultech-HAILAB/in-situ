@@ -30,7 +30,20 @@ function highlight(code: string): ReactNode[] {
   return output;
 }
 
-export function PythonCode({ code }: { code: string }) {
-  const content=useMemo(()=>highlight(code),[code]);
-  return <pre className="python-code" aria-label="읽기 전용 Python 코드"><code>{content}</code></pre>;
+export function sourceSnippet(source: string | undefined, fallback: string, location: { start: number; end: number } | null | undefined): string {
+  if (!source || !location || location.start < 1 || location.end < location.start) return fallback;
+  const lines = source.split(/\r\n|\r|\n/);
+  return location.end <= lines.length ? lines.slice(location.start-1,location.end).join('\n') : fallback;
+}
+
+export function PythonCode({ code, focus, startLine = 1 }: { code: string; focus?: string; startLine?: number }) {
+  const content=useMemo(()=>{
+    const start = focus ? code.lastIndexOf(focus) : -1;
+    return start < 0 || !focus ? highlight(code) : [<span key="before">{highlight(code.slice(0,start))}</span>, <mark className="python-focus" key="focus">{highlight(focus)}</mark>, <span key="after">{highlight(code.slice(start+focus.length))}</span>];
+  },[code,focus]);
+  const lineCount = code.split(/\r\n|\r|\n/).length;
+  return <pre className="python-code" aria-label="읽기 전용 Python 코드">
+    <span className="python-line-numbers" aria-hidden="true">{Array.from({ length: lineCount }, (_, index) => <span key={index}>{startLine+index}</span>)}</span>
+    <code>{content}</code>
+  </pre>;
 }

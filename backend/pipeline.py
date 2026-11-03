@@ -4,6 +4,7 @@ import copy
 import uuid
 from .runtime import digest
 from .legacy_engine import Unsupported
+from .transformations import extract as extract_transformations
 
 
 def canonical(code):
@@ -48,7 +49,8 @@ def prepare(code, groups=None, previous=None, engine=None):
         changed=not match or canonical(match['code'])!=canonical(block)
         steps.append({'id':sid,'revision':(match['revision']+int(changed)) if match else 1,
                       'code':block,'statement_indices':indices,'output_variable':output,'output_explicit':bool(spec.get('output_variable')),
-                      'intent_label':spec.get('label',''),'code_location':{'start':statements[0].lineno,'end':statements[-1].end_lineno}})
+                      'intent_label':spec.get('label',''),'code_location':{'start':statements[0].lineno,'end':statements[-1].end_lineno},
+                      'transformations':extract_transformations(code,indices,tree,output_variable=output)})
     if covered!=list(range(len(tree.body))): raise Unsupported('Step 정보는 전체 코드를 순서대로, 중복·누락 없이 포함해야 합니다.')
     return {'steps':steps,'code':code,'schema_version':3 if engine=='python' else 2,'engine':engine,'grouping_source':'provided' if groups else 'syntax_fallback'}
 

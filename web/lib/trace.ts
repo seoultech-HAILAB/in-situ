@@ -5,7 +5,7 @@ export { selectedCells, pointKey, combineSelection } from "../../src/tableSelect
 export { reviewGroups, groupColor, groupBorder } from "../../src/reviewGroups";
 export { reviewRun, workflowInputs, referencedOutputs, buildWorkflowGraph, ownerOf } from "../../src/workflowGraph";
 export { useTableDrag } from "../../src/useTableDrag";
-export { PythonCode } from "../components/trace/python-code";
+export { PythonCode, sourceSnippet } from "../components/trace/python-code";
 
 import type { CellValue, Run, Session, Stage, Table } from "../../src/types";
 
@@ -28,6 +28,8 @@ const explanationsReady = (run: Run) =>
     .slice(1)
     .every(
       (stage) =>
+        stage.transformations_version === "ast-transformations-v1" &&
+        (stage.transformations || []).every(item => !!item.description?.text) &&
         stage.column_explanations !== undefined &&
         (stage.operations || []).every((op) => op.column_explanations !== undefined),
     );
@@ -61,7 +63,7 @@ export async function api<T>(path: string, body?: unknown, options = { explain: 
       const described = await fetch(`/api/sessions/${data.id}/explanations`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ run_id: data.run.id }),
+        body: JSON.stringify({ run_id: data.run.id, refresh_transformations: path.endsWith("/generate") }),
       });
       if (described.ok) data = await described.json();
       else if (described.status === 409) {

@@ -23,6 +23,8 @@ from .access import gate, origins, request_identity
 from .pilot import Feedback, session_summary, csv_text
 from .pilot_plan import progress as pilot_progress
 from . import explanations
+from .transformations import annotate_run
+from .transformation_selection import selected_transformation, validate_selected_edit
 from . import candidates
 from .review_context import resolve_review_target
 from .review_presentation import present_run
@@ -165,6 +167,7 @@ def execute(s, code, assumptions, mode, request=None, groups=None, prepared=None
               'runtime': {'python': platform.python_version(), 'pandas': pd.__version__, 'engine': 'native-python-v3' if plan['engine']=='python' else 'capability-pandas-v2', 'wall_limit_seconds': 20, 'process_memory_mb': 512 if os.name == 'nt' else 768, 'credentials_in_worker': False},
               'generator_settings': {'model': os.getenv('OPENAI_MODEL', DEFAULT_MODEL), 'reasoning_effort': os.getenv('OPENAI_REASONING_EFFORT'), 'contract': 'semantic-steps-and-patches-v3'} if mode == 'api' else None,
               'generator_model': os.getenv('OPENAI_MODEL', DEFAULT_MODEL) if mode == 'api' else None}
+    annotate_run(result)
     s['runs'].append(result)
     s['cursor'] = len(s['runs']) - 1
     s.update(status='ready', error=None, confirmed=None)
@@ -172,7 +175,7 @@ def execute(s, code, assumptions, mode, request=None, groups=None, prepared=None
 
 
 def view(s):
-    runs=[present_run(run) for run in s['runs']]
+    runs=[present_run(annotate_run({**run,'stages':[dict(stage) for stage in run['stages']]})) for run in s['runs']]
     result={**s,'runs':runs,'condition_variant':condition_variant(s['condition'],s.get('study_mode')),
             'run':runs[s['cursor']] if s['cursor']>=0 else None}
     if s.get('study_task'):result['study_task']={**s['study_task'],'target_visibility':'participant'}
@@ -373,12 +376,16 @@ def generate(sid: str, body: Generate):
         selected = next((st for st in (prev or {}).get('stages', []) if st['id'] == target_id), None)
         try:
             review = resolve_review_target(prev, body.context or {}, body.scope) if revision else None
+            transformation = selected_transformation(prev,body.context or {}) if revision else None
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         model_context = {**(body.context or {}), 'scope': body.scope, 'base_run_id': prev['id'] if prev else None,
                          'pipeline': prev.get('pipeline') if prev else None, 'target_step': selected,
                          'cumulative_requirements': prev.get('cumulative_requirements', []) if prev else [],
                          'source_tables': s.get('sources_csv', {})}
+        if transformation:
+            model_context['selected_transformation']=transformation
+            model_context['transformation_edit_rule']='Edit only selected_transformation.code. Its source_context.definitions explain upstream inputs and are read-only in step scope.'
         if review:
             target = review['target']
             model_context['review_target'] = review
@@ -408,8 +415,10 @@ def generate(sid: str, body: Generate):
             plan = patch(prev, proposal.changes, proposal.base_run_id, body.scope, target_id) if proposal.changes else prepare(proposal.code, proposal.steps or None, prev,engine=s.get('execution_engine','capability'))
             if revision:
                 validate_scope(plan, prev, body.scope, target_id)
+                validate_selected_edit(plan['code'],prev,transformation,body.scope)
             event(s, 'revision_execution_started' if revision else 'execution_started', {'attempt_id': attempt_id})
             r = execute(s, plan['code'], proposal.assumptions, mode, body.request, prepared=plan)
+            if transformation:r['transformation_edit']={'target_id':transformation['id'],'base_run_id':prev['id'],'code_location':transformation['code_location']}
             if review:
                 r['review_comment'] = {'target': review['target'], 'request': body.request,
                     'scope': body.scope, 'base_run_id': prev['id'], 'base_code_version': prev['code_version'],
@@ -834,6 +843,7 @@ def pilot_feedback(sid: str,body: Feedback):
 
 class ExplainRun(BaseModel):
     run_id: str
+    refresh_transformations: bool = False
 
 
 @app.post('/api/sessions/{sid}/explanations')
@@ -841,14 +851,16 @@ def explain_run(sid: str,body: ExplainRun):
     with lock(sid):
         s=read(sid);r=current(s)
         if not r or r['id']!=body.run_id:raise HTTPException(409,'실행 버전이 바뀌었습니다. 현재 실행을 다시 여세요.')
-        if r.get('explanation_status')=='ready' and r.get('explanation_meta',{}).get('fingerprint')==explanations.fingerprint(r):return view(s)
+        if not body.refresh_transformations and r.get('explanation_status')=='ready' and r.get('explanation_meta',{}).get('fingerprint')==explanations.fingerprint(r):return view(s)
         snapshot=json.loads(json.dumps(r,ensure_ascii=False))
-    try:bundle,cached=explanations.obtain(snapshot);failure=None
+    try:
+        bundle,cached=explanations.obtain(snapshot,require_transformations=True) if body.refresh_transformations else explanations.obtain(snapshot)
+        failure=None
     except Exception as exc:bundle=None;cached=False;failure=str(exc)[:500]
     with lock(sid):
         s=read(sid);r=current(s)
         if not r or r['id']!=body.run_id:raise HTTPException(409,'설명 준비 중 실행 버전이 바뀌었습니다. 현재 실행을 다시 여세요.')
-        if bundle and r.get('explanation_status')=='ready' and r.get('explanation_meta',{}).get('fingerprint')==bundle['fingerprint']:return view(s)
+        if not body.refresh_transformations and bundle and r.get('explanation_status')=='ready' and r.get('explanation_meta',{}).get('fingerprint')==bundle['fingerprint']:return view(s)
         if bundle:
             explanations.attach(r,bundle,cached)
             event(s,'step_explanations_ready',{'source':'llm','model':bundle['model'],'prompt_version':bundle['prompt_version'],

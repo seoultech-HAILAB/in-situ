@@ -21,7 +21,8 @@ def snapshot():
 def bundle(run):
     return {'fingerprint':explanations.fingerprint(run),'model':explanations.model(),'prompt_version':explanations.PROMPT_VERSION,
             'steps':[{'step_no':1,'title':'수량의 두 배 계산','text':'각 행의 수량을 두 배로 계산해 total 열에 저장합니다.'}],
-            'columns':[{k:v for k,v in target.items() if k in ('step_no','operation_no','column')}|{'text':'수량의 두 배 계산'} for target in explanations.column_targets(run)]}
+            'columns':[{k:v for k,v in target.items() if k in ('step_no','operation_no','column')}|{'text':'수량의 두 배 계산'} for target in explanations.column_targets(run)],
+            'transformations':[{k:target[k] for k in ('step_no','transformation_no')}|{'text':'수량에 2를 곱해 계산합니다.'} for target in explanations.transformation_targets(run)]}
 
 
 def test_real_api_contract_code_only_cache_ignores_runtime_ids_and_detects_changed_data(monkeypatch,tmp_path):
@@ -33,11 +34,11 @@ def test_real_api_contract_code_only_cache_ignores_runtime_ids_and_detects_chang
         assert url.endswith('/responses') and json['store'] is False
         assert 'PRIVATE_INPUT_VALUE' not in json['input']
         payload=__import__('json').loads(json['input'])
-        assert set(payload)=={'code','steps','column_targets'} and set(payload['steps'][0])=={'step_no','code','upstream_steps'}
+        assert set(payload)=={'code','steps','column_targets','transformation_targets'} and set(payload['steps'][0])=={'step_no','code','upstream_steps'}
         assert payload['column_targets'] and all(set(t)=={'step_no','operation_no','column','code','expression'} for t in payload['column_targets'])
         assert payload['code']==run['code']
         return httpx.Response(200,json={'status':'completed','id':'test-response','usage':{'total_tokens':123},
-            'output':[{'content':[{'type':'output_text','text':__import__('json').dumps({k:bundle(run)[k] for k in ('steps','columns')})}]}]})
+            'output':[{'content':[{'type':'output_text','text':__import__('json').dumps({k:bundle(run)[k] for k in ('steps','columns','transformations')})}]}]})
     monkeypatch.setattr(httpx.Client,'post',post)
     a,cached=explanations.obtain(run);assert not cached
     other=copy.deepcopy(run);other['id']=str(uuid4());other['stages'][1]['id']=str(uuid4())
@@ -114,3 +115,20 @@ def test_c_explanations_attach_to_current_run_and_do_not_survive_a_changed_formu
     assert result['run']['stages'][1]['column_explanations']['total']=='수량의 두 배 계산'
     changed=copy.deepcopy(r);changed['stages'][1]['params']['formulas']['total']['formula']='qty * 3'
     with pytest.raises(ValueError):explanations.attach(changed,bundle(r),False)
+
+
+def test_explicit_refresh_upgrades_legacy_explanations_without_reexecuting_code(tmp_path,monkeypatch):
+    s,r,client=session(tmp_path,monkeypatch)
+    calls=[]
+    def obtain(current,require_transformations=False):
+        calls.append(require_transformations)
+        result=bundle(current)
+        if not require_transformations:result.pop('transformations')
+        return result,False
+    monkeypatch.setattr(explanations,'obtain',obtain)
+    old=client.post(f"/api/sessions/{s['id']}/explanations",json={'run_id':r['id']}).json()['run']
+    assert old['stages'][1]['transformations'][0]['description']['source']=='ast'
+    fresh=client.post(f"/api/sessions/{s['id']}/explanations",json={'run_id':r['id'],'refresh_transformations':True}).json()['run']
+    assert fresh['stages'][1]['transformations'][0]['description']['source']=='llm'
+    assert fresh['id']==old['id'] and fresh['code']==old['code'] and fresh['stages'][1]['table']==old['stages'][1]['table']
+    assert calls==[False,True]
