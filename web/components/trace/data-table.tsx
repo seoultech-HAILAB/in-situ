@@ -18,6 +18,7 @@ import {
   type TableChanges,
 } from "@/lib/trace";
 import { ColumnOrigin } from "./column-origin";
+import type { Marks } from "./history";
 
 const PREVIEW_ROWS = 5;
 
@@ -50,6 +51,7 @@ export function DataTable({
   picked: pickedTarget,
   disabled = false,
   handlers = {},
+  marks,
 }: {
   data: Table;
   stage?: Stage;
@@ -66,6 +68,7 @@ export function DataTable({
   picked?: ReviewTarget | null;
   disabled?: boolean;
   handlers?: TableHandlers;
+  marks?: Marks;
 }) {
   const id = useId();
   const scroller = useRef<HTMLDivElement>(null);
@@ -183,6 +186,7 @@ export function DataTable({
                     )}
                   >
                     {added && stage ? <ColumnOrigin stage={stage} column={c} /> : c}
+                    <MarkDot mark={marks?.get(`col:${c}`)} />
                   </th>
                 );
               })}
@@ -213,6 +217,7 @@ export function DataTable({
                         className="w-full rounded-sm px-1 py-1.5 text-right hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                       >
                         {i + 1}
+                        <MarkDot mark={marks?.get(`row:${row.id}`)} />
                       </button>
                     ) : (
                       <span className="block px-1 py-1.5">{i + 1}</span>
@@ -254,6 +259,7 @@ export function DataTable({
                         tabIndex={selectable && !disabled ? 0 : undefined}
                         title={title}
                         style={style}
+                        data-mark={marks?.get(`cell:${pointKey(row.id, c)}`)}
                         onClick={
                           selectable
                             ? (e) => {
@@ -272,7 +278,7 @@ export function DataTable({
                             : undefined
                         }
                         className={cn(
-                          "max-w-[28ch] truncate border-l px-3 py-1.5 align-top",
+                          "relative max-w-[28ch] truncate border-l px-3 py-1.5 align-top",
                           typeof value === "number" && "text-right tabular-nums",
                           selectable && "cursor-cell focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
                           added && group === undefined && "bg-added/60",
@@ -316,5 +322,18 @@ export function DataTable({
         </div>
       )}
     </div>
+  );
+}
+
+/** Review-history channel: a small neutral mark, separate from the change colors. */
+function MarkDot({ mark }: { mark?: "viewed" | "checked" }) {
+  if (!mark) return null;
+  return (
+    <span
+      className={cn("ml-1.5 inline-block size-1.5 rounded-full align-middle", mark === "checked" ? "bg-foreground" : "ring-1 ring-foreground/50")}
+      title={mark === "checked" ? "확인 표시함" : "근거를 열어 봄"}
+    >
+      <span className="sr-only">{mark === "checked" ? "확인 표시함" : "근거를 열어 봄"}</span>
+    </span>
   );
 }

@@ -176,6 +176,7 @@ def view(s):
     result={**s,'runs':runs,'condition_variant':condition_variant(s['condition'],s.get('study_mode')),
             'run':runs[s['cursor']] if s['cursor']>=0 else None}
     if s.get('study_task'):result['study_task']={**s['study_task'],'target_visibility':'participant'}
+    if s.get('preview'):result['preview']={**s['preview'],'run':present_run(s['preview']['run'])}
     return result
 
 
@@ -188,10 +189,14 @@ def participant_view(payload):
     if not isinstance(payload,dict) or not isinstance(payload.get('runs'),list) or 'input_csv' not in payload:return payload
     # Schema-aware projection: never filter actual table cells by their column names.
     result={k:v for k,v in payload.items() if k not in ('events','failed_attempts','task_provenance','judgment_evaluations')}
+    # The participant's own review history (what they opened, noted, marked) so it survives reloads.
+    result['review_history']=[{k:e.get(k) for k in ('id','timestamp','event','execution_version','data')}
+                              for e in payload.get('events',[]) if e.get('event') in REVIEW_HISTORY_EVENTS]
     def redact_run(run):
         return {k:v for k,v in run.items() if k!='comparison'} if run else run
     result['runs']=[redact_run(r) for r in payload['runs']]
     if 'run' in payload:result['run']=redact_run(payload['run'])
+    if payload.get('preview'):result['preview']={**payload['preview'],'run':redact_run(payload['preview']['run'])}
     if isinstance(payload.get('error'),dict):
         result['error']={'phase':payload['error'].get('phase'),
                          'message':'새 실행이 완료되지 않았습니다. 이전 실행 결과를 확인하거나 다시 요청해 주세요.'}
@@ -349,6 +354,7 @@ class Generate(BaseModel):
     context: dict | None = None
     scope: str = 'pipeline'
     base_run_id: str | None = None
+    preview: bool = False
 
 
 @app.post('/api/sessions/{sid}/generate')
@@ -361,6 +367,8 @@ def generate(sid: str, body: Generate):
             raise HTTPException(422,'초기 생성에는 Input과 Target 외의 과제 설명을 전달할 수 없습니다.')
         if s.get('study_task') and not revision:
             raise HTTPException(409,'이 과제의 초기 코드는 고정되어 있습니다. 새 과제를 시작하거나 자연어 수정 요청을 사용하세요.')
+        if body.preview and not revision:
+            raise HTTPException(422, '미리보기는 수정 요청에만 사용할 수 있습니다.')
         if revision and (not prev or not body.request.strip()):
             raise HTTPException(422, '수정할 실행 결과와 수정 요청이 필요합니다.')
         if body.scope not in ('step', 'pipeline'):
@@ -388,7 +396,8 @@ def generate(sid: str, body: Generate):
         started = time.perf_counter()
         attempt_id = str(uuid.uuid4())
         prefix = 'revision' if revision else 'generation'
-        event(s, f'{prefix}_requested', {'request': body.request, 'context': body.context, 'scope': body.scope, 'base_run_id': prev['id'] if prev else None, 'review_ms': review_duration(s), 'attempt_id': attempt_id})
+        event(s, f'{prefix}_requested', {'request': body.request, 'context': body.context, 'scope': body.scope, 'base_run_id': prev['id'] if prev else None, 'review_ms': review_duration(s), 'attempt_id': attempt_id, 'preview': body.preview})
+        s.pop('preview', None)
         s.update(status='generating', error=None, confirmed=None)
         save(s)
         phase, proposal, plan = 'generation', None, None
@@ -413,9 +422,16 @@ def generate(sid: str, body: Generate):
             if review:
                 r['review_comment'] = {'target': review['target'], 'request': body.request,
                     'scope': body.scope, 'base_run_id': prev['id'], 'base_code_version': prev['code_version'],
-                    'interaction': 'selection-action-v2' if (body.context or {}).get('interaction') == 'selection-action-v2' else 'anchored-comment-v1'}
+                    'interaction': (body.context or {}).get('interaction') if (body.context or {}).get('interaction') in ('selection-action-v2', 'inspector-composer-v1') else 'anchored-comment-v1'}
             event(s, 'revision_execution_completed' if revision else 'execution_completed',
                   {'execution_ms': r['execution_ms'], 'processing_ms': round((time.perf_counter() - started) * 1000, 2), 'attempt_id': attempt_id})
+            if body.preview:
+                # Keep the candidate aside: the current result stays until the participant applies it.
+                s['runs'].pop()
+                s['cursor'] = next(i for i, v in enumerate(s['runs']) if v['id'] == prev['id'])
+                s['preview'] = {'run': r, 'request': body.request, 'scope': body.scope, 'context': body.context,
+                                'base_run_id': prev['id'], 'attempt_id': attempt_id, 'at': now()}
+                event(s, 'revision_preview_ready', {'attempt_id': attempt_id, 'preview_run_id': r['id'], 'base_run_id': prev['id']})
         except Exception as exc:
             s.update(status='failed', error={'phase': phase, 'message': str(exc)[:2000],
                      'candidate_code': plan['code'] if plan else proposal.code if proposal else None,
@@ -429,6 +445,9 @@ def generate(sid: str, body: Generate):
         return view(s)
 
 
+REVIEW_HISTORY_EVENTS = {'explanation_viewed', 'evidence_viewed', 'code_viewed', 'review_note_saved', 'review_mark_set'}
+
+
 class EventBody(BaseModel):
     event: str
     data: dict = Field(default_factory=dict)
@@ -438,7 +457,7 @@ class EventBody(BaseModel):
 
 @app.post('/api/sessions/{sid}/events')
 def log(sid: str, body: EventBody):
-    allowed = {'review_started', 'step_selected', 'row_selected', 'cell_selected', 'column_selected', 'review_target_selected', 'review_comment_opened', 'lineage_viewed', 'removed_rows_expanded', 'workspace_view_changed', 'workflow_layout_changed'}
+    allowed = {'review_started', 'step_selected', 'row_selected', 'cell_selected', 'column_selected', 'review_target_selected', 'review_comment_opened', 'lineage_viewed', 'removed_rows_expanded', 'workspace_view_changed', 'workflow_layout_changed', 'review_summary_opened'} | REVIEW_HISTORY_EVENTS
     if body.event not in allowed or len(json.dumps(body.data)) > 10000:
         raise HTTPException(422, '지원하지 않는 이벤트입니다.')
     with lock(sid):
@@ -476,6 +495,83 @@ def condition(sid: str, body: Condition):
         return view(s)
 
 
+class PreviewDecision(BaseModel):
+    run_id: str
+
+
+@app.post('/api/sessions/{sid}/preview/{decision}')
+def decide_preview(sid: str, decision: str, body: PreviewDecision):
+    if decision not in ('apply', 'discard'):
+        raise HTTPException(404, 'Not Found')
+    with lock(sid):
+        s = read(sid)
+        pending = s.get('preview')
+        if not pending or pending['run']['id'] != body.run_id:
+            raise HTTPException(409, '미리보기가 바뀌었습니다. 다시 요청해 주세요.')
+        if s.get('confirmed'):
+            raise HTTPException(409, '확정한 결과는 바꿀 수 없습니다.')
+        prev = current(s)
+        if decision == 'apply':
+            if not prev or prev['id'] != pending['base_run_id']:
+                raise HTTPException(409, '기준 실행 버전이 달라졌습니다. 다시 요청해 주세요.')
+            s['runs'].append(pending['run'])
+            s['cursor'] = len(s['runs']) - 1
+        s.pop('preview')
+        s.update(status='ready', error=None)
+        event(s, f'revision_preview_{"applied" if decision == "apply" else "discarded"}',
+              {'attempt_id': pending['attempt_id'], 'preview_run_id': body.run_id, 'base_run_id': pending['base_run_id']})
+        save(s)
+        return view(s)
+
+
+@app.get('/api/admin/sessions')
+def admin_sessions():
+    rows = []
+    for file in STORE.glob('*.json'):
+        try:
+            s = json.loads(file.read_text(encoding='utf-8'))
+            if s.get('study_task'):
+                last = s['events'][-1] if s.get('events') else {}
+                rows.append({**session_summary(s), 'participant_label': s.get('participant_label'),
+                             'last_event': last.get('event'), 'last_event_at': last.get('timestamp'),
+                             'preview_pending': bool(s.get('preview'))})
+        except (ValueError, KeyError):
+            continue
+    return {'sessions': sorted(rows, key=lambda r: r['started_at'], reverse=True)}
+
+
+@app.get('/api/admin/sessions/{sid}/events')
+def admin_events(sid: str, after: str | None = None):
+    """Event log for live tracking; `after` returns only events newer than that id."""
+    with lock(sid):
+        s = read(sid)
+    events = s.get('events', [])
+    if after:
+        index = next((i for i, e in enumerate(events) if e['id'] == after), None)
+        events = events[index + 1:] if index is not None else events
+    return {'session_id': sid, 'status': s['status'], 'confirmed': bool(s.get('confirmed')),
+            'preview_pending': bool(s.get('preview')), 'events': events}
+
+
+class SessionIds(BaseModel):
+    session_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+@app.post('/api/admin/sessions/delete')
+def admin_delete(body: SessionIds):
+    # Moved aside rather than erased, so a mistaken delete can be restored by hand.
+    trash = STORE.parent / 'deleted-sessions'
+    trash.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for sid in {str(i) for i in body.session_ids}:
+        with lock(sid):
+            src = path(sid)
+            if src.exists():
+                src.replace(trash / src.name)
+                moved.append(sid)
+    return {'deleted': moved}
+
+
 @app.post('/api/sessions/{sid}/undo')
 def undo(sid: str):
     with lock(sid):
@@ -488,6 +584,7 @@ def undo(sid: str):
             s.update(status='ready', error=None, confirmed=None)
         else:
             raise HTTPException(422, '되돌릴 실행이 없습니다.')
+        s.pop('preview', None)
         event(s, 'undo', {'from_run_id': r['id'] if r else None, 'to_run_id': current(s)['id']})
         event(s, 'review_resumed')
         save(s)
@@ -501,6 +598,7 @@ def confirm(sid: str):
         if s['status'] != 'ready' or not current(s):
             raise HTTPException(422, '현재 성공한 실행 결과가 있어야 확정할 수 있습니다.')
         if not s['confirmed']:
+            s.pop('preview', None)
             s['confirmed'] = {'at': now(), 'run_id': current(s)['id']}
             event(s, 'final_confirmed', {'review_ms': review_duration(s), 'output': current(s)['stages'][-1]['table'], 'code': current(s)['code']})
             save(s)
@@ -778,12 +876,19 @@ class WozStart(StudyStart):
     model_config={'extra':'forbid'}
     input_csv: str=Field(min_length=1,max_length=1_000_000)
     target_csv: str=Field(min_length=1,max_length=1_000_000)
+    participant: str | None=Field(default=None,max_length=80)
 
 
 @app.post('/api/woz-tasks/{cid}/start')
 def start_woz(cid: str,body: WozStart):
     if body.condition not in CONDITION_VARIANTS:raise HTTPException(422,'조건은 ex 또는 in-situ여야 합니다.')
-    return start_study(cid,body,preview=woz_preview(),woz=True)
+    started=start_study(cid,body,preview=woz_preview(),woz=True)
+    if not body.participant or not body.participant.strip():return started
+    with lock(started['id']):
+        s=read(started['id'])
+        s['participant_label']=body.participant.strip()
+        save(s)
+        return view(s)
 
 
 @app.post('/api/sessions/{sid}/initial-step-judgment')
@@ -1035,6 +1140,8 @@ def index():
 def web_root_file(name: str):
     # Top-level export files only (icon.svg, 404.html); no directory traversal.
     file = WEB / name
+    if not file.is_file() and (WEB / f'{name}.html').is_file():
+        file = WEB / f'{name}.html'
     if '/' in name or name.startswith('.') or not file.is_file():
         raise HTTPException(404, 'Not Found')
     return FileResponse(file)

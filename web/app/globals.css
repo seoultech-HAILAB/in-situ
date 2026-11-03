@@ -4,6 +4,8 @@
 
 @theme inline {
   --color-background: var(--background);
+  --color-sidebar: var(--sidebar);
+  --color-panel-head: var(--panel-head);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-pretendard), system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -41,24 +43,26 @@
 /* Quiet instrument palette: chrome stays neutral so the table encodings carry
    the meaning. Both conditions share every token. */
 :root {
-  --background: #f4f5f7;
+  --background: #ffffff;
+  --sidebar: #f9f9f9;
+  --panel-head: #f6f7f9;
   --foreground: #1d2127;
   --card: #ffffff;
   --card-foreground: #1d2127;
   --popover: #ffffff;
   --popover-foreground: #1d2127;
-  --primary: #175d50;
+  --primary: #1f2328;
   --primary-foreground: #ffffff;
   --secondary: #eceef1;
   --secondary-foreground: #1d2127;
   --muted: #eef0f3;
   --muted-foreground: #646b76;
-  --accent: #e8f1ef;
-  --accent-foreground: #134a40;
+  --accent: #eeeff1;
+  --accent-foreground: #1f2328;
   --destructive: #b42318;
   --border: #dfe2e7;
   --input: #d5d9df;
-  --ring: #175d50;
+  --ring: #5b6470;
   --radius: 0.375rem;
 
   --added: #e3f3e8;
@@ -91,7 +95,8 @@
   padding: 0.875rem 1rem;
   font-family: var(--font-mono);
   font-size: 12.5px;
-  line-height: 1.7;
+  line-height: 20px;
+  white-space: pre;
   tab-size: 4;
   color: #24292f;
 }
@@ -102,3 +107,43 @@
 .py-function { color: #1f5fbf; }
 .py-type { color: #a1305d; }
 .py-operator { color: #5c6470; }
+
+/* Editor view: gutter and code share the line box so marks line up. */
+.code-view {
+  --code-line: 20px;
+  --code-pad: 0.875rem;
+}
+.code-view .python-code {
+  position: relative; /* paint text above the line marks */
+  overflow: visible;
+  padding: var(--code-pad) 1rem;
+}
+.code-gutter {
+  padding: var(--code-pad) 0.625rem var(--code-pad) 0.875rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: var(--code-line);
+  text-align: right;
+  color: #a0a6b0;
+  border-right: 1px solid var(--border);
+}
+.code-mark {
+  position: absolute;
+  inset-inline: 0;
+  background: #fff4cc;
+  box-shadow: inset 2px 0 0 #d4a72c;
+}
+
+/* Review-history mark on a cell: small corner tick, not a fill color. */
+td[data-mark]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-style: solid;
+  border-width: 0 7px 7px 0;
+  border-color: transparent rgb(31 35 40 / 0.35) transparent transparent;
+}
+td[data-mark="checked"]::after {
+  border-color: transparent var(--foreground) transparent transparent;
+}

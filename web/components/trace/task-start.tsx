@@ -13,8 +13,12 @@ const conditions: { id: Condition; name: string; detail: string }[] = [
   { id: "in-situ", name: "In-situ", detail: "단계 설명, 변환 전후 표" },
 ];
 
-/** Experimenter-facing setup. Participants start from the review screen. */
+/**
+ * Task setup. With `fixed` (participant link) the task and condition come from the
+ * link, so only the Input and Target and the start button are shown.
+ */
 export function TaskStart({
+  fixed = false,
   tasks,
   loading,
   task,
@@ -25,6 +29,7 @@ export function TaskStart({
   onStart,
   onResume,
 }: {
+  fixed?: boolean;
   tasks: TaskSummary[];
   loading: boolean;
   task: TaskInput | null;
@@ -39,14 +44,18 @@ export function TaskStart({
   return (
     <main className="mx-auto w-full max-w-6xl px-6 py-10">
       <div className="flex items-end justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">검수 준비</h1>
-        {onResume && (
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{fixed && task ? task.title : "검수 준비"}</h1>
+          {fixed && <p className="mt-2 text-muted-foreground">Input을 Target으로 바꾸는 변환 결과를 검수합니다. 준비되면 검수 시작을 누르세요.</p>}
+        </div>
+        {onResume && !fixed && (
           <Button variant="ghost" onClick={onResume} disabled={busy}>
             진행 중인 검수로 돌아가기
           </Button>
         )}
       </div>
 
+      {!fixed && (
       <div className="mt-8 grid gap-8 md:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
         <div className="space-y-2">
           <Label htmlFor="task">과제</Label>
@@ -83,6 +92,7 @@ export function TaskStart({
           </RadioGroup>
         </fieldset>
       </div>
+      )}
 
       {task && (
         <div className="mt-10 grid gap-6 lg:grid-cols-2">

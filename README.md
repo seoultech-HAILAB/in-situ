@@ -65,6 +65,8 @@ npm.cmd run dev
 
 ### 참가자 화면 (web/)
 
+실험은 `/admin`에서 시작합니다. 과제(12개)와 조건, 참가자 번호를 정하면 `/?task=ID&condition=in-situ&pid=P01` 형식의 참가자 링크가 만들어지고, 같은 링크로 다시 들어오면 진행 중인 세션이 이어집니다. 링크 없이 `/`에 들어오면 안내 문구만 보입니다. 수정 요청은 먼저 미리보기로 실행되고, 참가자가 `이대로 적용`을 눌러야 현재 결과가 바뀝니다(`revision_preview_ready/applied/discarded` 이벤트).
+
 `/`는 Next.js + shadcn/ui로 만든 참가자 화면(`web/`)이고, 기존 Vite 화면은 `/legacy`로 옮겼습니다. 과제 관리, 파일럿 로그, 코드 등록 같은 연구자 도구는 `/legacy?research=1`에서 씁니다. 새 화면에서 `?research=1`을 붙이면 조건 전환과 과제 변경 버튼이 보입니다.
 
 ```bash

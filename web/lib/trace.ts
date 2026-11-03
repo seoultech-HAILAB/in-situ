@@ -7,7 +7,25 @@ export { reviewRun, workflowInputs, referencedOutputs, buildWorkflowGraph, owner
 export { useTableDrag } from "../../src/useTableDrag";
 export { PythonCode } from "../../src/PythonCode";
 
-import type { CellValue, Run, Session, Stage, Table } from "../../src/types";
+import type { CellValue, Condition, ReviewTarget, Run, Session as BaseSession, Stage, Table } from "../../src/types";
+
+/** One review-history record: what the participant opened, noted, or marked, per execution version. */
+export type HistoryEvent = "explanation_viewed" | "evidence_viewed" | "code_viewed" | "review_note_saved" | "review_mark_set";
+export type HistoryEntry = {
+  id?: string;
+  timestamp?: string;
+  event: HistoryEvent;
+  execution_version: string | null;
+  data: { target: ReviewTarget; note?: string; checked?: boolean };
+};
+export const HISTORY_EVENTS: HistoryEvent[] = ["explanation_viewed", "evidence_viewed", "code_viewed", "review_note_saved", "review_mark_set"];
+/** A revision candidate that has run but is not yet the current result. */
+export type Preview = { run: Run; request: string; scope: "step" | "pipeline"; context?: { step_id?: string } | null; base_run_id: string };
+export type Session = BaseSession & { review_history?: HistoryEntry[]; events?: HistoryEntry[]; preview?: Preview; participant_label?: string };
+
+/** Stable identity of a review target, used to attach history to it. */
+export const targetKey = (t: ReviewTarget) =>
+  JSON.stringify([t.step_id, t.table_role || "output", t.input_ref || "", t.operation_id || "", t.kind, t.row_id || "", t.column || "", t.row_ids || [], t.columns || [], t.cells || []]);
 
 export type TaskSummary = { id: string; title: string; review_number?: number | null };
 export type TaskInput = TaskSummary & {
@@ -17,6 +35,24 @@ export type TaskInput = TaskSummary & {
   target: Table;
   sources: Record<string, Table>;
 };
+export type SessionRow = {
+  session_id: string;
+  task_id: string;
+  title: string;
+  condition: Condition;
+  participant_label?: string | null;
+  started_at: string;
+  status: string;
+  confirmed: boolean;
+  revision_requests: number;
+  revision_executions: number;
+  undo_count: number;
+  event_count: number;
+  last_event?: string | null;
+  last_event_at?: string | null;
+  preview_pending?: boolean;
+};
+export type LogEvent = { id: string; timestamp: string; event: string; execution_version?: string | null; data?: Record<string, unknown> };
 export type Health = { api_configured: boolean; model: string; access_role: string; pilot_account: boolean };
 
 export const researchView = () =>
@@ -95,4 +131,3 @@ export const stepName = (stage: Stage, fallback: (s: Stage) => string) =>
 export const taskLabel = (task: TaskSummary) =>
   typeof task.review_number === "number" ? `과제 ${task.review_number}. ${task.title}` : task.title;
 
-export type { Session };
