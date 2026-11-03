@@ -12,6 +12,10 @@ if [ ! -f dist/index.html ]; then
   npm ci
   npm run build
 fi
+# Participant UI (Next.js static export). Built once per checkout.
+if [ ! -f web/out/index.html ]; then
+  (cd web && npm ci && npm run build)
+fi
 unset TRACE_LEGACY_AUTH TRACE_ACCESS_FILE
 trace_port="${TRACE_PORT:-8001}"
 printf '\nTRACE: http://127.0.0.1:%s/?research=1\nPress Ctrl+C to stop.\n' "$trace_port"

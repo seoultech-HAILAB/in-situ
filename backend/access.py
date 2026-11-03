@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, quote
 
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-LOCAL_ORIGINS = {'http://127.0.0.1:8000', 'http://localhost:8000', 'http://127.0.0.1:5173', 'http://localhost:5173'}
+LOCAL_ORIGINS = {'http://127.0.0.1:8000', 'http://localhost:8000', 'http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:3000', 'http://localhost:3000'}
 COOKIE = 'trace_team'
 request_identity = ContextVar('trace_request_identity',default=None)
 _attempts = OrderedDict()

@@ -63,7 +63,18 @@ npm.cmd run build
 npm.cmd run dev
 ```
 
-`src/`는 React UI, `backend/`는 생성·실행·추적·수정 API, `tests/`는 회귀 검증입니다. 실행 기록은 `.local/sessions/`, 팀 서버 기록은 `.local/pilot/sessions/`에 저장됩니다. 기존 계정·세션·참가자 로그·설명 캐시·API 키는 이 저장소에 포함하지 않습니다. `.venv`, `node_modules`는 각 PC에서 다시 생성합니다. `dist/`에는 현재 서버에서 제공하는 화면 빌드를 함께 포함했으며 소스를 수정하면 `npm.cmd run build`로 갱신합니다.
+### 참가자 화면 (web/)
+
+`/`는 Next.js + shadcn/ui로 만든 참가자 화면(`web/`)이고, 기존 Vite 화면은 `/legacy`로 옮겼습니다. 과제 관리, 파일럿 로그, 코드 등록 같은 연구자 도구는 `/legacy?research=1`에서 씁니다. 새 화면에서 `?research=1`을 붙이면 조건 전환과 과제 변경 버튼이 보입니다.
+
+```bash
+cd web && npm ci && npm run build   # web/out 생성, FastAPI가 / 에서 제공
+TRACE_API=http://127.0.0.1:8000 npm run dev   # 개발 서버, /api는 FastAPI로 전달
+```
+
+표 변화 계산·선택·계보 로직은 `src/`의 기존 모듈(`tableChanges`, `tableSelection`, `reviewGroups`, `workflowGraph`, `useTableDrag`)을 그대로 가져다 씁니다. 이 모듈을 고치면 두 화면에 함께 반영됩니다.
+
+`src/`는 기존 React UI, `backend/`는 생성·실행·추적·수정 API, `tests/`는 회귀 검증입니다. 실행 기록은 `.local/sessions/`, 팀 서버 기록은 `.local/pilot/sessions/`에 저장됩니다. 기존 계정·세션·참가자 로그·설명 캐시·API 키는 이 저장소에 포함하지 않습니다. `.venv`, `node_modules`는 각 PC에서 다시 생성합니다. `dist/`에는 현재 서버에서 제공하는 화면 빌드를 함께 포함했으며 소스를 수정하면 `npm.cmd run build`로 갱신합니다.
 
 로그인 없는 개발용 실행이므로 접속자는 개발자 기능도 사용할 수 있습니다. 외부 공유 URL은 신뢰하는 개발자에게만 전달하세요. 기존 인증 코드는 과거 기록/회귀 호환용이며 `TRACE_LEGACY_AUTH=1`을 명시하지 않는 한 옛 접속 파일도 읽지 않습니다. 기본 시작 스크립트는 계정을 생성하지 않습니다.
 

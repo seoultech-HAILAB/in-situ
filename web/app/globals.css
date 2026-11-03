@@ -1,0 +1,104 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-pretendard), system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-heading: var(--font-sans);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-added: var(--added);
+  --color-added-foreground: var(--added-foreground);
+  --color-changed: var(--changed);
+  --color-changed-foreground: var(--changed-foreground);
+  --color-removed: var(--removed);
+  --color-removed-foreground: var(--removed-foreground);
+  --color-source: var(--source);
+  --color-source-foreground: var(--source-foreground);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+/* Quiet instrument palette: chrome stays neutral so the table encodings carry
+   the meaning. Both conditions share every token. */
+:root {
+  --background: #f4f5f7;
+  --foreground: #1d2127;
+  --card: #ffffff;
+  --card-foreground: #1d2127;
+  --popover: #ffffff;
+  --popover-foreground: #1d2127;
+  --primary: #175d50;
+  --primary-foreground: #ffffff;
+  --secondary: #eceef1;
+  --secondary-foreground: #1d2127;
+  --muted: #eef0f3;
+  --muted-foreground: #646b76;
+  --accent: #e8f1ef;
+  --accent-foreground: #134a40;
+  --destructive: #b42318;
+  --border: #dfe2e7;
+  --input: #d5d9df;
+  --ring: #175d50;
+  --radius: 0.375rem;
+
+  --added: #e3f3e8;
+  --added-foreground: #1e6b3a;
+  --changed: #fff1c7;
+  --changed-foreground: #7a5200;
+  --removed: #fbe7e6;
+  --removed-foreground: #a8322d;
+  --source: #e2ecfb;
+  --source-foreground: #2457a6;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "tnum" 0;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* Read-only Python highlighting (token classes come from src/PythonCode.tsx). */
+.python-code {
+  margin: 0;
+  overflow: auto;
+  padding: 0.875rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  tab-size: 4;
+  color: #24292f;
+}
+.py-keyword { color: #8a3ffc; }
+.py-string { color: #0a7a5a; }
+.py-number, .py-constant { color: #b35900; }
+.py-comment { color: #8b929c; font-style: italic; }
+.py-function { color: #1f5fbf; }
+.py-type { color: #a1305d; }
+.py-operator { color: #5c6470; }

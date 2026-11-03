@@ -1010,10 +1010,31 @@ async def local_guard(request: Request, call_next):
 
 if (ROOT / 'dist' / 'assets').exists():
     app.mount('/assets', StaticFiles(directory=ROOT / 'dist' / 'assets'), name='assets')
+# Participant UI: Next.js static export in web/out. The Vite UI stays at /legacy
+# for researcher tools that the new UI does not cover.
+WEB = ROOT / 'web' / 'out'
+if (WEB / '_next').exists():
+    app.mount('/_next', StaticFiles(directory=WEB / '_next'), name='next')
+
+
+@app.get('/legacy')
+def legacy_index():
+    if not (ROOT / 'dist' / 'index.html').exists():
+        raise HTTPException(503, 'npm run build 후 서버를 시작하거나 Vite 개발 서버를 사용하세요.')
+    return FileResponse(ROOT / 'dist' / 'index.html')
 
 
 @app.get('/')
 def index():
-    if not (ROOT / 'dist' / 'index.html').exists():
-        raise HTTPException(503, 'npm run build 후 서버를 시작하거나 Vite 개발 서버를 사용하세요.')
-    return FileResponse(ROOT / 'dist' / 'index.html')
+    if (WEB / 'index.html').exists():
+        return FileResponse(WEB / 'index.html')
+    return legacy_index()
+
+
+@app.get('/{name}')
+def web_root_file(name: str):
+    # Top-level export files only (icon.svg, 404.html); no directory traversal.
+    file = WEB / name
+    if '/' in name or name.startswith('.') or not file.is_file():
+        raise HTTPException(404, 'Not Found')
+    return FileResponse(file)
