@@ -11,10 +11,9 @@ import httpx
 from pydantic import BaseModel,Field
 from .generation import DEFAULT_MODEL
 from .connection_errors import api_connection_error
-from .transformations import targets as transformation_targets, annotate_run
-from .source_dependencies import VERSION as SOURCE_CONTEXT_VERSION
+from .transformations import targets as transformation_targets, annotate_run, VERSION as TRANSFORMATIONS_VERSION
 
-PROMPT_VERSION='executed-code-korean-prose-v3'
+PROMPT_VERSION='executed-code-korean-prose-v4'
 INSTRUCTIONS='''당신은 테이블 변환 검수 화면의 한국어 설명 작성자다.
 현재 실제로 실행된 pandas 코드를 읽고, 사람이 데이터 변화를 이해하도록 자연스러운 한국어로 설명하라.
 코드를 고치거나 평가하는 작업이 아니다. 제공되는 것은 현재 실행 코드와 Step 경계뿐이다.
@@ -41,12 +40,7 @@ operation_no 0은 검수 Step 결과, 1 이상은 Step 안의 실제 실행 연�
 columns에는 주어진 column_targets를 같은 순서로 모두 정확히 한 번씩 반환하라. 대상이 없으면 빈 배열을 반환하라.
 transformation_targets는 AST가 Step 안에서 추출한 개별 변환과 정확한 원본 코드 위치다. 상세 셀 추적의 지원 여부와는 무관하다.
 transformations에는 모든 transformation_targets를 같은 순서로 정확히 한 번씩 반환하고 step_no와 transformation_no를 그대로 유지하라.
-각 변환의 text는 source_context의 원본 열부터 현재 선택한 연산까지의 변환 경로를 설명하라. 임시 변수의 이름이나 "첫 번째 분할 부분"에서 시작하지 말라.
-예: "원본 Location 열을 쉼표로 최대 한 번 나눈 뒤 첫 번째 부분의 양끝 공백을 제거해 City 열을 만듭니다."
-source_context.definitions는 해당 임시 변수의 읽기 전용 정의 코드다. 이것은 설명을 위한 문맥이며 현재 변환의 코드 위치나 수정 대상이 아니다.
-원본 열, 구분자, 분할 횟수, 선택한 부분과 현재 처리 순서를 코드에서 확인해 보존하라. 관련 없는 형제 열의 변환이나 이후 연산은 포함하지 말라.
-input_columns의 0, 1 등은 분할 결과의 임시 열일 수 있다. 원본 열 이름은 source_context.original_columns를 우선하며 임시 열 번호를 원본 열로 설명하지 말라.
-complete가 false이면 확인한 부분만 설명하고, 조건부 정의나 미해결 변수를 임의로 원본 열과 연결하지 말라.
+각 변환의 text는 해당 항목의 code에 있는 개별 연산만 설명하라. 이전 변수 정의의 처리 과정을 덧붙이지 말라.
 대상 열, 조건, 계산식의 수치·연산, 날짜 형식, 결측값 처리, 연결 키·방식, 정렬 방향을 코드에서 확인해 구체적으로 설명하라.
 함수 내부 코드는 전체 코드의 함수 정의와 호출 문맥을 함께 읽되 실행되지 않은 분기가 실행됐다고 단정하지 말라.
 데이터 값이나 셀 계보를 추측하지 말라. 변환이 일반 Python이어도 지정된 코드 위치를 유지하라.'''
@@ -124,7 +118,7 @@ def column_targets(run):
 def fingerprint(run):
     data={'prompt':PROMPT_VERSION,'model':model(),'reasoning':os.getenv('OPENAI_REASONING_EFFORT'),
           'base_url':os.getenv('OPENAI_BASE_URL','https://api.openai.com/v1'),'observed':context(run),'column_targets':column_targets(run),
-          'transformation_contract':'ast-transformations-v1','transformation_targets':transformation_targets(run)}
+          'transformation_contract':TRANSFORMATIONS_VERSION,'transformation_targets':transformation_targets(run)}
     return hashlib.sha256(json.dumps(data,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
 
 
@@ -197,7 +191,7 @@ def generate(run):
         return {'fingerprint':fingerprint(run),'prompt_version':PROMPT_VERSION,'model':model(),
             'generated_at':datetime.now(timezone.utc).isoformat(),'response_id':body.get('id'),
             'usage':body.get('usage'),'steps':[s.model_dump() for s in result.steps],'columns':[s.model_dump() for s in result.columns],
-            'transformations':[s.model_dump() for s in result.transformations], 'source_context_version':SOURCE_CONTEXT_VERSION}
+            'transformations':[s.model_dump() for s in result.transformations], 'transformation_contract':TRANSFORMATIONS_VERSION}
     except httpx.TimeoutException as exc:raise ValueError('자연어 설명 API 응답 시간(60초)을 초과했습니다.') from exc
     except httpx.RequestError as exc:raise ValueError(api_connection_error(exc,'자연어 설명')) from exc
 
@@ -216,7 +210,7 @@ def obtain(run,require_transformations=False):
         bundled=Path(__file__).resolve().parents[1]/'tasks/explanations'/(observed+'.json')
         if bundled.exists() and not require_transformations:
             saved=json.loads(bundled.read_text(encoding='utf-8'))
-            if saved.get('source_context_version')!=SOURCE_CONTEXT_VERSION:
+            if saved.get('transformation_contract')!=TRANSFORMATIONS_VERSION:
                 saved={k:v for k,v in saved.items() if k!='transformations'}
             if saved.get('observation_sha256')!=observed or saved.get('prompt_version')!=PROMPT_VERSION:
                 raise ValueError('동봉된 설명과 실제 실행 스냅샷이 다릅니다.')
@@ -230,6 +224,7 @@ def obtain(run,require_transformations=False):
 
 def attach(run,bundle,cached):
     if bundle['fingerprint']!=fingerprint(run):raise ValueError('설명의 실행 스냅샷이 다릅니다.')
+    annotate_run(run)
     result=validate_steps(bundle,len(run['stages'])-1,run)
     for stage,item in zip(run['stages'][1:],result.steps):
         stage['nl_explanation']={'title':item.title,'text':item.text,'source':'llm'}
@@ -239,7 +234,6 @@ def attach(run,bundle,cached):
         stage=run['stages'][item.step_no]
         node=stage if item.operation_no==0 else stage['operations'][item.operation_no-1]
         node['column_explanations'][item.column]=item.text
-    annotate_run(run)
     for item in result.transformations:
         transform=run['stages'][item.step_no]['transformations'][item.transformation_no-1]
         transform['description']={'text':item.text,'source':'llm'}

@@ -23,7 +23,7 @@ if __name__=='__main__':
             install_audit()
             result=python_run(body['code'],parse_table(body['input_csv']),{k:parse_table(v) for k,v in body.get('sources',{}).items()},body['plan'])
         else:
-            result=run(body['code'],parse_table(body['input_csv']),{k:parse_table(v) for k,v in body.get('sources',{}).items()})
+            result=run(body['code'],parse_table(body['input_csv']),{k:parse_table(v) for k,v in body.get('sources',{}).items()},plan=body.get('plan'))
         payload=json.dumps({'ok':True,'records':result},ensure_ascii=False,allow_nan=False)
         if len(payload.encode())>32_000_000: raise ValueError('실행 기록 크기 제한을 초과했습니다.')
         sys.stdout.write(payload)

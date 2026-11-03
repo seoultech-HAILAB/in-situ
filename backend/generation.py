@@ -2,6 +2,7 @@
 import json
 import os
 from typing import Protocol
+from typing import Literal
 import httpx
 from .connection_errors import api_connection_error
 from pydantic import BaseModel, Field
@@ -29,6 +30,7 @@ class Proposal(BaseModel):
     steps: list[StepSpec]=Field(default_factory=list,max_length=40)
     changes: list[Change]=Field(default_factory=list,max_length=40)
     base_run_id: str | None=None
+    revision_scope: Literal['transformation','step','pipeline'] | None=None
 
 
 class Generator(Protocol):
@@ -65,6 +67,14 @@ adapter does NOT prevent execution. Labels/descriptions are proposals, not evide
 
 REVISION:
 Return code='', steps=[], base_run_id=context.base_run_id and explicit changes.
+When context.scope='auto', infer revision_scope from the natural-language intent and the observed Step/transformation.
+Use transformation for a selected individual operation, step for the whole observed Step,
+or pipeline ONLY when the request calls for broader changes. Do not ask the user to select a scope.
+Preserve the observed target Step ID and replace its code; do not delete it or split its revision into new Steps.
+All candidate code remains uncommitted until explicit approval. Only the target Step is previewed;
+downstream Steps run after approval. Mention broader changes and ambiguities in Korean assumptions.
+Use the selected operation as the edit anchor unless the request explicitly requires broader changes.
+Return revision_scope=null for initial generation or when context.scope is not auto.
 Changes use replace/insert_after/delete, existing step_id, code block, label.
 Preserve exported variables needed downstream. scope='step' only changes that Step or inserts
 next to it; scope='pipeline' can rewire multiple Steps. All changed code is re-executed.
@@ -149,7 +159,8 @@ class OpenAIGenerator:
             'code':{'type':'string'},'assumptions':{'type':'array','items':{'type':'string'}},
             'steps':{'type':'array','items':{'type':'object','properties':{'id':{'type':['string','null']},'label':{'type':'string'},'statement_indices':{'type':'array','items':{'type':'integer'}},'output_variable':{'type':['string','null']}},'required':['id','label','statement_indices','output_variable'],'additionalProperties':False}},
             'changes':{'type':'array','items':{'type':'object','properties':{'action':{'type':'string','enum':['replace','insert_after','delete']},'step_id':{'type':'string'},'code':{'type':'string'},'label':{'type':'string'}},'required':['action','step_id','code','label'],'additionalProperties':False}},
-            'base_run_id':{'type':['string','null']}},'required':['code','assumptions','steps','changes','base_run_id'],'additionalProperties':False}
+            'base_run_id':{'type':['string','null']},
+            'revision_scope':{'type':['string','null'],'enum':['transformation','step','pipeline',None]}},'required':['code','assumptions','steps','changes','base_run_id','revision_scope'],'additionalProperties':False}
         model_input={'input_csv':input_csv,'target_csv':target_csv}
         if requirements:model_input['requirements']=requirements
         if previous_code is not None:model_input['current_code']=previous_code

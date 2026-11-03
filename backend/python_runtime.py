@@ -232,6 +232,7 @@ def run(code,frame,sources,plan):
                      'exception_type':type(exc).__name__,'message':str(exc)[:2000],
                      'traceback':traceback.format_exc(limit=6)[-4000:]}
             raise PythonFailure(f'Step {spec["id"]} 실행 실패: {exc}',records,failure) from exc
+    if plan.get('preview_only'):return records
     if not isinstance(env.get('result'),pd.DataFrame):raise PythonFailure('최종 result DataFrame이 없습니다.',records)
     if plan['steps'][-1].get('observed_output_variable')!='result':
         raise PythonFailure('마지막 Step 출력은 실제 result여야 합니다.',records)

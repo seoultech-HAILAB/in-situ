@@ -391,12 +391,15 @@ class Interpreter:
         ids=['u'+digest([kind,clean(ix)]) for ix in out.index]
         return self.record(srcs,out,ids,{}, {r:[] for r in ids},kind,p,complete=False)
 
-    def run(self,code):
+    def run(self,code,plan=None):
         if len(code)>30000: raise Unsupported('코드 길이 제한 초과')
         self.code=code;tree=ast.parse(code)
         if not tree.body or len(tree.body)>40 or len(list(ast.walk(tree)))>5000: raise Unsupported('구문 수 제한 초과')
         names=set(self.env)
-        for i,stmt in enumerate(tree.body):
+        statements=tree.body
+        if plan and plan.get('preview_only'):
+            statements=statements[:max(i for step in plan['steps'] for i in step['statement_indices'])+1]
+        for i,stmt in enumerate(statements):
             self.stmt,self.si=stmt,i
             if not isinstance(stmt,ast.Assign) or len(stmt.targets)!=1 or not isinstance(stmt.targets[0],ast.Name): raise Unsupported('직선형 DataFrame 할당문만 지원합니다. import/함수/루프/콜백/직접 셀 변경은 금지됩니다.')
             name=stmt.targets[0].id
@@ -407,11 +410,11 @@ class Interpreter:
             if len(self.ops)==start: f=self.rowwise(f,f.data.copy(),'copy')
             for op in self.ops[start:]: op['output_variable']=name
             self.env[name]=f;names.add(name)
-        if tree.body[-1].targets[0].id!='result': raise Unsupported('마지막 출력 변수는 result이어야 합니다.')
+        if not (plan and plan.get('preview_only')) and tree.body[-1].targets[0].id!='result': raise Unsupported('마지막 출력 변수는 result이어야 합니다.')
         return self.ops
 
 
-def run(code,frame,sources=None):
-    worker=Interpreter(frame,sources);ops=worker.run(code);f=worker.roots['input']
+def run(code,frame,sources=None,plan=None):
+    worker=Interpreter(frame,sources);ops=worker.run(code,plan);f=worker.roots['input']
     root={'id':'input','order':0,'kind':'input','label':'입력','summary':'원본 데이터를 불러옵니다.','table':table(f.data,f.ids),'input':None,'params':{},'lineage':f.lineage,'row_sources':f.rows,'removed':None,'code':'','code_location':None,'trace_level':'detailed'}
     return [root]+ops

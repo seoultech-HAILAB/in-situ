@@ -92,7 +92,8 @@ test('deleted row explanations resolve the actual filter rather than a later der
   assert.deepEqual(transformations(s,{kind:'removed',row:deleted}).map(t=>t.code),[filter.code]);
 });
 
-const sourceTransform = (id, column, code, extra={}) => ({id,kind:'derive',method:'apply',code,output_columns:[column],input_columns:[column],code_location:{start:3,end:3,start_column:4,end_column:30},description:{text:`${column}만 계산한 설명`,source:'llm'},syntax_only:true,execution_version:'run-2',code_version:2,...extra});
+const effect = (kind,column,rows=[]) => ({operation_id:'verified',row_identity:true,columns:{added:[],changed:[],removed:[],[kind]:column?[column]:[]},rows:{added:[],changed:[],removed:[],reordered:[],[kind]:column?[]:rows},cells:{added:{},changed:{},removed:{},[kind]:column?{[column]:rows}:{}}});
+const sourceTransform = (id, column, code, extra={}) => ({id,kind:'derive',method:'apply',code,output_columns:[column],input_columns:[column],code_location:{start:3,end:3,start_column:4,end_column:30},description:{text:`${column}만 계산한 설명`,source:'llm'},syntax_only:true,execution_version:'run-2',code_version:2,execution_effects:[effect('changed',column)],...extra});
 test('common-trace selections use column-specific AST code and prose instead of the global Step operation', () => {
   const input=table(['x','y'],[['a',{x:1,y:2}]]);
   const s=stage(input,input,{trace_level:'common',execution_version:'run-2',code_version:2,code:'entire step code',
@@ -102,23 +103,59 @@ test('common-trace selections use column-specific AST code and prose instead of 
   assert.equal(selected[0].text,'y만 계산한 설명');
   assert.equal(selected[0].source,'llm');
 });
-test('unresolved source correspondence offers explicit candidates; stale run metadata is never shown', () => {
+test('unresolved source correspondence returns nothing; stale metadata is never shown', () => {
   const s=stage(null,table(['z'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('x','x','exact expression')]});
-  assert.equal(transformations(s,{kind:'added',column:'z'})[0].candidates,true);
+  assert.deepEqual(transformations(s,{kind:'added',column:'z'}),[]);
   s.transformations[0].execution_version='run-1';
   assert.deepEqual(transformations(s,{kind:'added',column:'z'}),[]);
   s.transformations=[];
   assert.deepEqual(transformations(s,{kind:'added',column:'z'}),[], 'no fallback to entire Step');
 });
 test('deleted row source selection isolates the filter from unrelated derived columns', () => {
-  const s=stage(null,table(['x'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('x','x','calculate x'),sourceTransform('filter','', 'df[df.x > 1]',{kind:'filter',output_columns:[],row_effect:'remove'})]});
-  assert.deepEqual(transformations(s,{kind:'removed',row:{kind:'removed',cells:{},number:1}}).map(t=>t.code),['df[df.x > 1]']);
+  const s=stage(null,table(['x'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('x','x','calculate x'),sourceTransform('filter','', 'df[df.x > 1]',{kind:'filter',output_columns:[],row_effect:'remove',execution_effects:[effect('removed',null,['a'])]})]});
+  assert.deepEqual(transformations(s,{kind:'removed',row:{id:'a',kind:'removed',cells:{},number:1}}).map(t=>t.code),['df[df.x > 1]']);
 });
 
-test('upstream definitions enrich the explanation without becoming selectable edit operations', () => {
+test('legacy source-context definitions are ignored while local edit identity is retained', () => {
   const context={version:'source-dependencies-v1',original_columns:[{table:'input_df',column:'Location'}],definitions:[{symbol:'parts',code:"parts = input_df['Location'].str.split(',')",code_location:{start:2,end:2},read_only:true}],text:'Location을 분할하고 첫 부분의 공백을 제거해 City를 만듭니다.',complete:true,unresolved:[]};
-  const s=stage(null,table(['City'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('city','City','parts[0].str.strip()',{source_context:context,code_location:{start:11,end:11}})]});
+  const s=stage(null,table(['City'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('city','City','parts[0].str.strip()',{source_context:context,code_location:{start:11,end:11},execution_effects:[effect('added','City')]})]});
   const choices=transformations(s,{kind:'added',column:'City'});
   assert.equal(choices.length,1);assert.equal(choices[0].id,'city');assert.equal(choices[0].line.start,11);
-  assert.equal(choices[0].code,'parts[0].str.strip()');assert.equal(choices[0].context.definitions[0].code_location.start,2);
+  assert.equal(choices[0].code,'parts[0].str.strip()');assert.equal(choices[0].context,undefined);
+});
+
+test('target type and change kind must match: deleted selection columns never fall back to sorting', () => {
+  const select=sourceTransform('select','x',"df[['x']]",{kind:'select',removed_columns:['y'],execution_effects:[effect('removed','y',['a'])]});
+  const sort=sourceTransform('sort','x',"df.sort_values('x')",{kind:'sort',execution_effects:[effect('changed',null,['a'])]});
+  const s=stage(null,table(['x'],[]),{execution_version:'run-2',code_version:2,transformations:[select,sort]});
+  assert.deepEqual(transformations(s,{kind:'removed',column:'y'}).map(item=>item.id),['select']);
+  assert.deepEqual(transformations(s,{kind:'changed',column:'y'}),[]);
+  assert.deepEqual(transformations(s,{kind:'removed',column:'missing'}),[]);
+  assert.deepEqual(transformations(s,{kind:'removed',column:'y',row:{id:'a'}}).map(item=>item.id),['select']);
+  assert.deepEqual(transformations(s,{kind:'removed',column:'y',row:{id:'b'}}),[]);
+  assert.deepEqual(transformations(s,{kind:'changed',row:{id:'a'}}).map(item=>item.id),['sort']);
+  assert.deepEqual(transformations(s,{kind:'removed',row:{id:'a'}}),[]);
+});
+
+test('an input column used to derive another output does not match as the changed target', () => {
+  const s=stage(null,table(['x','z'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('derive','z',"z=df['x']*2",{input_columns:['x'],execution_effects:[effect('added','z')]})]});
+  assert.deepEqual(transformations(s,{kind:'changed',column:'x'}),[]);
+  assert.deepEqual(transformations(s,{kind:'changed',column:'z'}),[]);
+  assert.deepEqual(transformations(s,{kind:'added',column:'z'}).map(item=>item.id),['derive']);
+});
+
+test('legacy unmatched records never use the entire Step or an unrelated sort as a fallback', () => {
+  const input=table(['x','y'],[['a',{x:1,y:2}],['b',{x:2,y:3}]]);
+  const output=table(['x','y'],[['b',{x:2,y:3}],['a',{x:1,y:2}]]);
+  const s=stage(input,output,{code:'entire Step',operations:[stage(input,output,{kind:'sort_values',code:'actual sort'})]});
+  assert.deepEqual(transformations(s,{kind:'removed',column:'y'}),[]);
+  assert.deepEqual(transformations(s,{kind:'changed',column:'x'}),[]);
+  assert.deepEqual(transformations(stage(input,output),{kind:'changed',column:'x'}),[]);
+});
+
+test('revision highlights match the separate verified before/after comparison', () => {
+  const s=stage(null,table(['z'],[]),{execution_version:'run-2',code_version:2,transformations:[sourceTransform('derive','z','z=x*3',{execution_effects:[effect('added','z')],revision_effects:[effect('changed','z',['a'])]})]});
+  assert.deepEqual(transformations(s,{kind:'changed',column:'z'}),[]);
+  assert.deepEqual(transformations(s,{kind:'changed',column:'z',revision:true}).map(item=>item.id),['derive']);
+  assert.deepEqual(transformations(s,{kind:'added',column:'z',revision:true}),[]);
 });

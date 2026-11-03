@@ -15,7 +15,7 @@ def selected_transformation(run,context):
     if item is None:raise ValueError('선택한 연산이 현재 Step에 없습니다. 다시 선택하세요.')
     return {'id':item['id'],'step_id':stage['id'],'execution_version':run['id'],'code_version':run['code_version'],
             'code':item['code'],'code_location':item['code_location'],'output_columns':item['output_columns'],
-            'source_context':item['source_context'],'reference_definitions_read_only':True}
+            'syntax_only':item['syntax_only']}
 
 
 def validate_selected_edit(code,previous,selection,scope):
@@ -42,4 +42,4 @@ def validate_selected_edit(code,previous,selection,scope):
             return ast.dump(tree,include_attributes=False)
         except (AttributeError,IndexError,TypeError):return None
     if mask(old)!=mask(new):
-        raise ValueError('현재 선택한 연산 밖의 코드가 변경되었습니다. 참고 변수 정의를 함께 바꾸려면 전체 코드 범위를 선택하세요.')
+        raise ValueError('현재 선택한 연산 밖의 코드가 변경되었습니다. 더 넓은 수정이 필요하면 자연어 요청에 명시하세요.')

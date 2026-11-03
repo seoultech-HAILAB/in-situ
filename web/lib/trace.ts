@@ -28,7 +28,7 @@ const explanationsReady = (run: Run) =>
     .slice(1)
     .every(
       (stage) =>
-        stage.transformations_version === "ast-transformations-v1" &&
+        stage.transformations_version === "ast-transformations-v2" &&
         (stage.transformations || []).every(item => !!item.description?.text) &&
         stage.column_explanations !== undefined &&
         (stage.operations || []).every((op) => op.column_explanations !== undefined),
@@ -76,6 +76,24 @@ export async function api<T>(path: string, body?: unknown, options = { explain: 
     } catch {
       data.run.explanation_status = "failed";
       data.run.explanation_error = "설명 서버에 연결하지 못했습니다.";
+    }
+  }
+  if (options.explain && !path.endsWith("/explanations") && isSession && data.pending_revision?.status === "ready" && !data.pending_revision.explanation_status) {
+    try {
+      const described = await fetch(`/api/sessions/${data.id}/revision-preview/${data.pending_revision.id}/explanations`, {
+        method: "POST", headers, body: "{}",
+      });
+      if (described.ok) data = await described.json();
+      else if (described.status === 409) {
+        const latest = await fetch(`/api/sessions/${data.id}`, { headers });
+        if (latest.ok) data = await latest.json();
+      } else {
+        data.pending_revision.explanation_status = "failed";
+        data.pending_revision.explanation_error = "후보의 자연어 설명을 불러오지 못했습니다.";
+      }
+    } catch {
+      data.pending_revision.explanation_status = "failed";
+      data.pending_revision.explanation_error = "후보 설명 서버에 연결하지 못했습니다.";
     }
   }
   return data;

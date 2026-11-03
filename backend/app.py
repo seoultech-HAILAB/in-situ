@@ -99,6 +99,7 @@ def read(sid):
             r['operations'] = []
             r['cumulative_requirements'] = ([s['requirements']] if s['requirements'] else []) + [v['revision_request'] for v in s['runs'] if v.get('revision_request') and v['code_version'] <= r['code_version']]
             changed = True
+        annotate_run(r)
     s.setdefault('sources_csv', {})
     s.setdefault('sources', {})
     s['condition_variant'] = condition_variant(s['condition'],s.get('study_mode'))
@@ -175,9 +176,11 @@ def execute(s, code, assumptions, mode, request=None, groups=None, prepared=None
 
 
 def view(s):
+    from .revision_preview import public_preview
     runs=[present_run(annotate_run({**run,'stages':[dict(stage) for stage in run['stages']]})) for run in s['runs']]
     result={**s,'runs':runs,'condition_variant':condition_variant(s['condition'],s.get('study_mode')),
             'run':runs[s['cursor']] if s['cursor']>=0 else None}
+    result['pending_revision']=public_preview(s.get('pending_revision'),current(s))
     if s.get('study_task'):result['study_task']={**s['study_task'],'target_visibility':'participant'}
     return result
 
@@ -358,6 +361,7 @@ class Generate(BaseModel):
 def generate(sid: str, body: Generate):
     with lock(sid):
         s = read(sid)
+        if s.get('pending_revision'):raise HTTPException(409,'대기 중인 수정 후보를 먼저 승인하거나 거부하세요.')
         prev = current(s)
         revision = body.request is not None
         if s.get('study_mode')==prototype.MODE and not revision and body.context:
@@ -385,7 +389,7 @@ def generate(sid: str, body: Generate):
                          'source_tables': s.get('sources_csv', {})}
         if transformation:
             model_context['selected_transformation']=transformation
-            model_context['transformation_edit_rule']='Edit only selected_transformation.code. Its source_context.definitions explain upstream inputs and are read-only in step scope.'
+            model_context['transformation_edit_rule']='Edit only selected_transformation.code in step scope.'
         if review:
             target = review['target']
             model_context['review_target'] = review
@@ -436,6 +440,10 @@ def generate(sid: str, body: Generate):
                    'last_success_run_id': current(s)['id'] if current(s) else None})
         save(s)
         return view(s)
+
+
+from .revision_preview import install as install_revision_preview
+install_revision_preview(app)
 
 
 class EventBody(BaseModel):
@@ -489,6 +497,7 @@ def condition(sid: str, body: Condition):
 def undo(sid: str):
     with lock(sid):
         s = read(sid)
+        if s.get('pending_revision'):raise HTTPException(409,'대기 중인 수정 후보를 먼저 승인하거나 거부하세요.')
         r = current(s)
         if s['status'] == 'failed' and r:
             s.update(status='ready', error=None, confirmed=None)
@@ -507,6 +516,7 @@ def undo(sid: str):
 def confirm(sid: str):
     with lock(sid):
         s = read(sid)
+        if s.get('pending_revision'):raise HTTPException(409,'대기 중인 수정 후보를 먼저 승인하거나 거부하세요.')
         if s['status'] != 'ready' or not current(s):
             raise HTTPException(422, '현재 성공한 실행 결과가 있어야 확정할 수 있습니다.')
         if not s['confirmed']:
@@ -528,6 +538,7 @@ class Code(BaseModel):
 def research_code(sid: str, body: Code):
     with lock(sid):
         s = read(sid)
+        if s.get('pending_revision'):raise HTTPException(409,'대기 중인 수정 후보를 먼저 승인하거나 거부하세요.')
         plan=None
         attempt_id=str(uuid.uuid4())
         try:
@@ -1039,6 +1050,14 @@ def legacy_index():
 @app.get('/in-situ')
 def in_situ_index():
     file = WEB / 'in-situ.html'
+    if not file.exists():
+        raise HTTPException(503, 'web/에서 npm run build 후 서버를 시작하세요.')
+    return FileResponse(file)
+
+
+@app.get('/ex-situ')
+def ex_situ_index():
+    file = WEB / 'ex-situ.html'
     if not file.exists():
         raise HTTPException(503, 'web/에서 npm run build 후 서버를 시작하세요.')
     return FileResponse(file)

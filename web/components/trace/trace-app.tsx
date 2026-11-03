@@ -1,27 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { ArrowUp, Check, ChevronLeft, ChevronRight, Download, LoaderCircle, Play, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api as traceApi, PythonCode, sourceSnippet, taskLabel, type Health, type Session, type TaskInput, type TaskSummary } from "@/lib/trace";
 import { WorkspaceTable } from "./workspace-table";
-import type { Transformation } from "./workspace-diff";
+import { ExSituExplanation } from "./ex-situ-explanation";
+import { workspaceSteps } from "./revision-workspace";
 
-type Scope = "step" | "pipeline";
 type Message = { id: string; request: string; response: string; failed?: boolean };
 type PanelSizes = { code: number; chat: number; top: number };
 const DEFAULT_SIZES: PanelSizes = { code: 50, chat: 25, top: 73 };
 
 export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" }) {
   const sessionKey = condition === "in-situ" ? "trace-in-situ-session" : "trace-woz-session";
-  const api = <T,>(path: string, body?: unknown) => traceApi<T>(path, body, { explain: condition === "in-situ" });
+  const panelKey = `workspace-panels:${condition}`;
+  const api = <T,>(path: string, body?: unknown) => traceApi<T>(path, body, { explain: true });
   const [session, setSession] = useState<Session | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [taskId, setTaskId] = useState("");
   const [stepId, setStepId] = useState("");
   const [request, setRequest] = useState("");
-  const [scope, setScope] = useState<Scope>("step");
   const [booting, setBooting] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -35,19 +35,14 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   const composer = useRef<HTMLTextAreaElement>(null);
   const inFlight = useRef(false);
   const run = session?.run;
+  const preview = session?.pending_revision;
   // Code blocks and tables use the same actual execution stage.
-  const steps = useMemo(() => run?.stages.filter((stage) => stage.kind !== "input") ?? [], [run]);
-  const step = steps.find((stage) => stage.id === stepId) ?? steps[0];
-  const stepIndex = steps.findIndex((stage) => stage.id === step?.id);
+  const steps = useMemo(() => workspaceSteps(run, preview), [run, preview]);
+  const step = steps.find((stage) => stage.viewId === stepId) ?? steps[0];
+  const stepIndex = steps.findIndex((stage) => stage.viewId === step?.viewId);
+  const observedVersion = step?.execution_version ?? run?.id;
+  const originalStep = run?.stages.find(stage => stage.id === step?.id);
   const taskChanged = !!session && taskId !== session.task_id;
-  const [editTarget,setEditTarget] = useState<{id:string;step:string;run:string;line?:number} | null>(null);
-  const selectedOperation = editTarget?.step === step?.id && editTarget?.run === run?.id ? editTarget : null;
-  useEffect(() => { setEditTarget(null); }, [run?.id,step?.id]);
-  const selectTransformation = useCallback((item: Transformation) => {
-    if (!item.id || !run || !step) return;
-    setEditTarget(current => current && current.id === item.id && current.run === run.id ? current : {id:item.id!,step:step.id,run:run.id,line:item.line?.start});
-    setScope("step");
-  }, [run?.id,step?.id]);
 
   function accept(next: Session) {
     setSession(next);
@@ -61,7 +56,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   useEffect(() => {
     let active = true;
     try {
-      const stored = JSON.parse(localStorage.getItem("workspace-panels") || "null");
+      const stored = JSON.parse(localStorage.getItem(panelKey) || localStorage.getItem("workspace-panels") || "null");
       if (stored && ["code", "chat", "top"].every((key) => Number.isFinite(stored[key]))) {
         setSizes({ code: Math.min(75, Math.max(25, stored.code)), chat: Math.min(45, Math.max(20, stored.chat)), top: Math.min(85, Math.max(40, stored.top)) });
       }
@@ -91,11 +86,30 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
     return () => { active = false; };
   }, []);
 
+  // A restored tab can observe a request still running in another tab/process.
+  useEffect(() => {
+    if (!session || !preview || !["generating", "approving"].includes(preview.status)) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const latest = await traceApi<Session>(`/sessions/${session.id}`, undefined, { explain: false });
+        if (active) {
+          accept(latest);
+          if (!latest.pending_revision) setStepId(preview.step_id);
+        }
+      } catch { /* Keep the observed snapshots available through reconnects. */ }
+      finally { if (active) timer = setTimeout(poll, 2000); }
+    };
+    timer = setTimeout(poll, 2000);
+    return () => { active = false; clearTimeout(timer); };
+  }, [session?.id, preview?.id, preview?.status]);
+
   useEffect(() => {
     codeList.current?.querySelector<HTMLElement>("[data-selected=true]")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [step?.id, run?.id]);
-  useEffect(() => { setTableView("output"); }, [step?.id, run?.id]);
-  useEffect(() => { chatEnd.current?.scrollIntoView({ block: "nearest" }); }, [pending, failures, run?.id]);
+  }, [step?.viewId, observedVersion]);
+  useEffect(() => { setTableView("output"); }, [step?.viewId, observedVersion]);
+  useEffect(() => { chatEnd.current?.scrollIntoView({ block: "nearest" }); }, [pending, failures, run?.id, preview?.id, preview?.status]);
 
   // Follow ancestry so undo and forks show only the current execution's history.
   const messages = useMemo(() => {
@@ -139,17 +153,18 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
 
   function revise() {
     const text = request.trim();
-    if (!session || !run || !step || !text || !health?.api_configured || inFlight.current || taskChanged) return;
+    if (!session || !run || !step || preview || !text || !health?.api_configured || inFlight.current || taskChanged) return;
     const submitted: Message = { id: crypto.randomUUID(), request: text, response: "" };
     void perform("수정하고 실행하는 중", async () => {
       setPending(submitted);
       try {
-        const next = await api<Session>(`/sessions/${session.id}/generate`, {
-          request: text, scope, base_run_id: run.id,
-          context: { step_id: step.id, selection: null, ...(selectedOperation ? {transformation_id:selectedOperation.id,execution_version:run.id} : {}) },
+        const next = await api<Session>(`/sessions/${session.id}/revision-preview`, {
+          request: text, base_run_id: run.id,
+          context: { step_id: step.id, selection: null },
         });
         accept(next);
-        if (next.status !== "ready") throw new Error(next.error?.message || "수정을 적용하지 못했습니다. 다시 요청해 주세요.");
+        if (next.pending_revision?.status === "failed") return;
+        if (next.pending_revision?.stage) setStepId(`preview:${next.pending_revision.id}`);
         setRequest("");
         if (composer.current) composer.current.style.height = "";
       } catch (e) {
@@ -160,11 +175,33 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
 
   function selectStep(id: string) { setStepId(id); }
 
+  function decide(action: "approve" | "deny") {
+    if (!session || !preview) return;
+    void perform(action === "approve" ? "전체 파이프라인 실행 중" : "후보 폐기 중", async () => {
+      const next = await traceApi<Session>(`/sessions/${session.id}/revision-preview/${preview.id}/${action}`, {}, { explain: action === "approve" });
+      accept(next);
+      if (!next.pending_revision) setStepId(preview.step_id);
+      if (next.pending_revision?.error) throw new Error(next.pending_revision.error);
+    });
+  }
+
+  function refreshDescriptions() {
+    if (!session || !run) return;
+    void perform("변환 설명 갱신", async () => {
+      const next = step?.isCandidate && preview
+        ? await api<Session>(`/sessions/${session.id}/revision-preview/${preview.id}/explanations`, {})
+        : await api<Session>(`/sessions/${session.id}/explanations`, { run_id: run.id, refresh_transformations: true });
+      accept(next);
+      if (step?.isCandidate && next.pending_revision?.explanation_status === "failed") throw new Error(next.pending_revision.explanation_error || "후보 설명을 갱신하지 못했습니다.");
+      if (next.run?.explanation_status === "failed") throw new Error(next.run.explanation_error || "변환 설명을 갱신하지 못했습니다.");
+    });
+  }
+
   function resize(axis: keyof PanelSizes, delta: number) {
     setSizes((current) => {
       const limits = axis === "code" ? [25, 75] : axis === "chat" ? [20, 45] : [40, 85];
       const next = { ...current, [axis]: Math.min(limits[1], Math.max(limits[0], current[axis] + delta)) };
-      localStorage.setItem("workspace-panels", JSON.stringify(next));
+      localStorage.setItem(panelKey, JSON.stringify(next));
       return next;
     });
   }
@@ -183,7 +220,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
       const point = axis === "top" ? e.clientY : e.clientX;
       const limits = axis === "code" ? [25, 75] : axis === "chat" ? [20, 45] : [40, 85];
       const value = Math.min(limits[1], Math.max(limits[0], initial + direction * (point - origin) / length * 100));
-      setSizes((current) => { const next = { ...current, [axis]: value }; localStorage.setItem("workspace-panels", JSON.stringify(next)); return next; });
+      setSizes((current) => { const next = { ...current, [axis]: value }; localStorage.setItem(panelKey, JSON.stringify(next)); return next; });
     };
     const stop = () => { target.removeEventListener("pointermove", move); target.removeEventListener("pointerup", stop); target.removeEventListener("pointercancel", stop); };
     target.addEventListener("pointermove", move);
@@ -205,38 +242,38 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
     ...Object.entries(session?.sources || {}).map(([name, table]) => ({ id: `source:${name}`, label: name, table })),
     ...(session?.target ? [{ id: "target", label: "Target", table: session.target }] : [])];
   const visibleTable = tables.find((item) => item.id === tableView)?.table;
-  const canSend = !!request.trim() && !!run && !!step && !busy && !!health?.api_configured && !taskChanged;
+  const canSend = !!request.trim() && !!run && !!step && !preview && !busy && !!health?.api_configured && !taskChanged;
 
   return (
-    <div className="workspace" ref={root} style={{ "--code-size": `${sizes.code}%`, "--chat-size": `${sizes.chat}%`, "--top-size": `${sizes.top}%` } as CSSProperties}>
+    <div className={`workspace workspace-${condition === "in-situ" ? "in-situ" : "ex-situ"}`} ref={root} style={{ "--code-size": `${sizes.code}%`, "--chat-size": `${sizes.chat}%`, "--top-size": `${sizes.top}%` } as CSSProperties}>
       <header className="workspace-toolbar">
-        {condition === "in-situ" && <span className="workspace-mode">In-situ</span>}
-        <select aria-label="과제 선택" className="task-select" disabled={booting || !!busy} value={taskId} onChange={(event) => setTaskId(event.target.value)}>
+        <span className="workspace-mode">{condition === "in-situ" ? "In-situ" : "Ex-situ"}</span>
+        <select aria-label="과제 선택" className="task-select" disabled={booting || !!busy || !!preview} value={taskId} onChange={(event) => setTaskId(event.target.value)}>
           {!tasks.some((task) => task.id === taskId) && <option value={taskId}>{booting ? "불러오는 중…" : session?.study_task?.title || "과제 선택"}</option>}
           {tasks.map((task) => <option key={task.id} value={task.id}>{taskLabel(task)}</option>)}
         </select>
-        <Button size="sm" variant="outline" disabled={!taskId || !!busy || booting} onClick={start} title="저장된 코드 실행">
+        <Button size="sm" variant="outline" disabled={!taskId || !!busy || !!preview || booting} onClick={start} title="저장된 코드 실행">
           {busy === "실행 중" ? <LoaderCircle className="animate-spin" /> : <Play />} 실행
         </Button>
         {taskChanged && <Button size="sm" variant="ghost" onClick={() => setTaskId(session!.task_id)}>취소</Button>}
         <div className="toolbar-spacer" />
         {run && <span className="version-label">v{run.code_version}</span>}
-        <Button size="icon-sm" variant="ghost" aria-label="이전 실행으로 되돌리기" title="되돌리기" disabled={!!busy || !session || (!run?.parent_run_id && session.status !== "failed")} onClick={() => void perform("되돌리는 중", async () => {
+        <Button size="icon-sm" variant="ghost" aria-label="이전 실행으로 되돌리기" title="되돌리기" disabled={!!busy || !!preview || !session || (!run?.parent_run_id && session.status !== "failed")} onClick={() => void perform("되돌리는 중", async () => {
           if (session) { accept(await api<Session>(`/sessions/${session.id}/undo`, {})); setFailures([]); }
         })}><RotateCcw /></Button>
-        <Button size="icon-sm" variant="ghost" aria-label="결과 CSV 다운로드" title="CSV 다운로드" disabled={!run || !!busy} onClick={() => { location.href = `/api/sessions/${session!.id}/output.csv`; }}><Download /></Button>
+        <Button size="icon-sm" variant="ghost" aria-label="결과 CSV 다운로드" title="확정 결과 CSV 다운로드" disabled={!run} onClick={() => { location.href = `/api/sessions/${session!.id}/output.csv`; }}><Download /></Button>
       </header>
       <div className="workspace-main">
         <div className="workspace-left">
           <div className="workspace-top">
             <section className="code-pane" aria-label="Step별 코드">
-              <div className="pane-toolbar"><span>Python</span><span className="pane-meta">{steps.length ? `${steps.length} steps` : ""}</span></div>
+              <div className="pane-toolbar"><span>Python</span><span className="pane-meta">{run ? `${run.stages.length - 1} steps` : ""}</span></div>
               <div className="code-list" ref={codeList} aria-busy={!!busy}>
-                {steps.map((stage, index) => <article className="code-step" key={stage.id} data-selected={stage.id === step?.id}>
-                  <button className="code-step-heading" aria-label={`Step ${index + 1} 선택`} aria-pressed={stage.id === step?.id} onClick={() => selectStep(stage.id)}>
-                    <span>Step {String(index + 1).padStart(2, "0")}</span><span className="step-line-range">{stage.code_location ? `L${stage.code_location.start}–${stage.code_location.end}` : ""}</span>
+                {steps.map((stage) => <article className={`code-step ${stage.isCandidate ? "code-step-candidate" : ""}`} key={stage.viewId} data-selected={stage.viewId === step?.viewId}>
+                  <button className="code-step-heading" aria-label={`${stage.viewLabel} 선택`} aria-pressed={stage.viewId === step?.viewId} onClick={() => selectStep(stage.viewId)}>
+                    <span>{stage.viewLabel}{stage.isCandidate && <span className="candidate-badge">수정 후보</span>}</span><span className="step-line-range">{stage.code_location ? `L${stage.code_location.start}–${stage.code_location.end}` : ""}</span>
                   </button>
-                  <div className="step-code" onClick={() => selectStep(stage.id)}><PythonCode code={sourceSnippet(run?.code, stage.code, stage.code_location)} startLine={stage.code_location?.start ?? 1} /></div>
+                  <div className="step-code" onClick={() => selectStep(stage.viewId)}><PythonCode code={stage.viewCode ?? sourceSnippet(run?.code, stage.code, stage.code_location)} startLine={stage.code_location?.start ?? 1} /></div>
                 </article>)}
                 {!steps.length && <div className="pane-empty" role="status">{booting ? "불러오는 중…" : busy || "과제를 선택하고 실행하세요."}</div>}
               </div>
@@ -244,25 +281,27 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
             {separator("code", "코드와 테이블 너비 조절")}
             <section className="table-pane" aria-label="중간 테이블">
               <div className="pane-toolbar">
-                <Button variant="ghost" size="icon-xs" aria-label="이전 Step" disabled={stepIndex <= 0 || !!busy} onClick={() => selectStep(steps[stepIndex - 1].id)}><ChevronLeft /></Button>
-                <select className="step-select" aria-label="테이블 Step 선택" value={step?.id ?? ""} disabled={!steps.length || !!busy} onChange={(event) => selectStep(event.target.value)}>
+                <Button variant="ghost" size="icon-xs" aria-label="이전 Step" disabled={stepIndex <= 0} onClick={() => selectStep(steps[stepIndex - 1].viewId)}><ChevronLeft /></Button>
+                <select className="step-select" aria-label="테이블 Step 선택" value={step?.viewId ?? ""} disabled={!steps.length} onChange={(event) => selectStep(event.target.value)}>
                   {!steps.length && <option value="">Step</option>}
-                  {steps.map((stage, index) => <option key={stage.id} value={stage.id}>Step {String(index + 1).padStart(2, "0")}</option>)}
+                  {steps.map((stage) => <option key={stage.viewId} value={stage.viewId}>{stage.viewLabel}</option>)}
                 </select>
-                <Button variant="ghost" size="icon-xs" aria-label="다음 Step" disabled={stepIndex < 0 || stepIndex >= steps.length - 1 || !!busy} onClick={() => selectStep(steps[stepIndex + 1].id)}><ChevronRight /></Button>
+                <Button variant="ghost" size="icon-xs" aria-label="다음 Step" disabled={stepIndex < 0 || stepIndex >= steps.length - 1} onClick={() => selectStep(steps[stepIndex + 1].viewId)}><ChevronRight /></Button>
                 <select className="table-view-select" aria-label="표 선택" disabled={!run} value={tableView} onChange={(event) => setTableView(event.target.value)}>{tables.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
                 {visibleTable && <span className="pane-meta table-shape">{visibleTable.rows.length}행 × {visibleTable.columns.length}열</span>}
               </div>
-              {visibleTable ? <WorkspaceTable key={`${run?.id}:${step?.id}:${tableView}`} data={visibleTable} identity={`${run?.id}:${step?.id}:${tableView}`} stage={condition === "in-situ" && tableView === "output" ? step : undefined}
-                onTransformationSelect={selectTransformation} refreshing={!!busy} onRefresh={condition === "in-situ" && health?.api_configured && session && run ? () => void perform("변환 설명 갱신", async () => {
-                  const next = await api<Session>(`/sessions/${session.id}/explanations`, { run_id: run.id, refresh_transformations: true });
-                  accept(next);
-                  if (next.run?.explanation_status === "failed") throw new Error(next.run.explanation_error || "변환 설명을 갱신하지 못했습니다.");
-                }) : undefined} /> : <div className="pane-empty" />}
+              {step?.isCandidate && tableView === "output" && <div className="candidate-comparison-note">{step.viewLabel} · {originalStep ? `Step ${originalStep.order} 수정 전 결과와 비교` : "수정 후보 실행 결과"}</div>}
+              {visibleTable ? <WorkspaceTable key={`${observedVersion}:${step?.viewId}:${tableView}`} data={visibleTable} identity={`${observedVersion}:${step?.viewId}:${tableView}`} stage={condition === "in-situ" && tableView === "output" ? step : undefined}
+                comparison={step?.isCandidate ? originalStep?.table : undefined}
+                refreshing={!!busy} onRefresh={condition === "in-situ" && health?.api_configured && session && run ? refreshDescriptions : undefined} /> : <div className="pane-empty" />}
             </section>
           </div>
-          {separator("top", "아래 빈 영역 높이 조절")}
-          <section className="reserved-pane" aria-label="빈 영역" />
+          {condition === "ex" && <>
+            {separator("top", "코드·테이블과 설명 높이 조절")}
+            <ExSituExplanation step={step} number={step?.order ?? 0} label={step?.viewLabel} revision={step?.isCandidate ? preview : undefined} busy={!!busy}
+              error={step?.isCandidate ? preview?.explanation_error : run?.explanation_status === "failed" ? run.explanation_error : undefined}
+              onRefresh={health?.api_configured && session && run ? refreshDescriptions : undefined} />
+          </>}
         </div>
         {separator("chat", "수정 요청 영역 너비 조절")}
         <section className="chat-pane" aria-label="자연어 수정 요청">
@@ -271,6 +310,20 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
             {messages.map((message) => <ChatMessage key={message.id} message={message} />)}
             {failures.map((message) => <ChatMessage key={message.id} message={message} />)}
             {pending && <><div className="chat-request">{pending.request}</div><div className="chat-response chat-working"><LoaderCircle size={14} className="animate-spin" />{busy}</div></>}
+            {preview && <div className="revision-chat-review" aria-label="수정 후보 확인">
+              <div className="chat-request">{preview.request}</div>
+              <div className="chat-response revision-review-card">
+                <strong>{preview.label} · {preview.status === "failed" ? "후보 실행 실패" : preview.status === "generating" ? "후보 생성 중" : preview.status === "approving" ? "전체 파이프라인 실행 중" : "승인 대기"}</strong>
+                <p>{preview.status === "failed" ? preview.error : "기존 코드와 결과를 유지하고 있습니다. Step을 전환해 수정 전후를 비교할 수 있습니다."}</p>
+                {preview.assumptions?.map((text,index) => <p key={index}>{text}</p>)}
+                {preview.error && preview.status !== "failed" && <p role="alert">{preview.error}</p>}
+                <div className="revision-actions">
+                  <Button size="sm" disabled={!!busy || preview.status !== "ready"} onClick={() => decide("approve")}><Check />Approve</Button>
+                  <Button size="sm" variant="outline" disabled={!!busy || !["ready","failed"].includes(preview.status)} onClick={() => decide("deny")}><X />Deny</Button>
+                </div>
+                {busy && <p role="status">{busy}</p>}
+              </div>
+            </div>}
             <div ref={chatEnd} />
           </div>
           <div className="chat-bottom">
@@ -278,13 +331,10 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
             {session?.status === "failed" && !pending && <p className="composer-note" role="status">실행에 실패했습니다. 마지막 성공 결과를 표시합니다.</p>}
             {health && !health.api_configured && <p className="composer-note">수정 요청을 사용하려면 서버의 .env에 API 키를 설정하세요.</p>}
             <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); revise(); }}>
-              {selectedOperation && <div className="composer-target"><span>수정 대상 · 현재 연산{selectedOperation.line ? ` L${selectedOperation.line}` : ""}</span><button type="button" aria-label="연산 선택 해제" onClick={() => setEditTarget(null)}><X size={12} /></button></div>}
-              <textarea ref={composer} aria-label="수정 요청 입력" placeholder="수정할 내용을 입력하세요" value={request} rows={3} maxLength={5000} disabled={!run || !!busy || taskChanged}
+              <textarea ref={composer} aria-label="수정 요청 입력" placeholder={preview ? "후보 승인 또는 거부 후 새 수정을 요청하세요" : "수정할 내용을 입력하세요"} value={request} rows={3} maxLength={5000} disabled={!run || !!busy || !!preview || taskChanged}
                 onChange={(event) => { setRequest(event.target.value); event.target.style.height = "auto"; event.target.style.height = `${Math.min(220, event.target.scrollHeight)}px`; }}
                 onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); revise(); } }} />
-              <div className="composer-tools"><select aria-label="수정 범위" disabled={!run || !!busy} value={scope} onChange={(event) => setScope(event.target.value as Scope)}>
-                <option value="step">{selectedOperation ? "현재 연산" : `Step ${stepIndex >= 0 ? String(stepIndex + 1).padStart(2, "0") : ""}`}</option><option value="pipeline">전체 코드</option>
-              </select><Button type="submit" size="icon-sm" aria-label="수정 요청 보내기" title="보내기 · Enter" disabled={!canSend}>{pending ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div>
+              <div className="composer-tools"><span className="composer-step" aria-label="현재 관찰 중인 Step" aria-live="polite">{step?.viewLabel ?? "Step —"}</span><Button type="submit" size="icon-sm" aria-label="수정 요청 보내기" title="보내기 · Enter" disabled={!canSend}>{pending ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div>
             </form>
           </div>
         </section>

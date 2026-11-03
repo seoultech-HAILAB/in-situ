@@ -21,7 +21,11 @@ function load(filename) {
 }
 const { WorkspaceTable } = load('web/components/trace/workspace-table');
 const { PythonCode, sourceSnippet } = load('web/components/trace/python-code');
-const { ReferenceDefinitions } = load('web/components/trace/transformation-bubble');
+const { TraceApp } = load('web/components/trace/trace-app');
+const { ExSituExplanation } = load('web/components/trace/ex-situ-explanation');
+const { TransformationDetails } = load('web/components/trace/transformation-details');
+const { workspaceSteps } = load('web/components/trace/revision-workspace');
+const { transformations } = load('web/components/trace/workspace-diff');
 const table = (columns, rows) => ({ columns, rows: rows.map(([id, values]) => ({id,values})), stats: {fields: Object.fromEntries(columns.map(c=>[c,{dtype:'number'}]))} });
 const before = table(['x','old'], [['a',{x:1,old:10}],['b',{x:2,old:20}]]);
 const after = table(['x','new'], [['a',{x:3,new:30}]]);
@@ -66,10 +70,71 @@ test('viewer line numbers use original source positions and preserve blank lines
   assert.equal(content,code);
 });
 
-test('popup reference code is numbered read-only context without controls that can switch the edit target', () => {
+test('old source-context metadata cannot render upstream variable definitions', () => {
   const context={definitions:[{symbol:'parts',code:"parts = df['Location'].str.split(',')",code_location:{start:10,end:10},read_only:true}]};
-  const html=renderToStaticMarkup(React.createElement(ReferenceDefinitions,{context}));
-  assert.ok(html.includes('참고용')&&html.includes('원본 열까지의 변수 정의')&&html.includes('L10'));
-  assert.ok(html.includes('Location')&&html.includes('split'));
+  const html=renderToStaticMarkup(React.createElement(TransformationDetails,{item:{code:'parts[0].str.strip()',text:'앞뒤 공백을 제거합니다.',context}}));
+  assert.ok(!html.includes('원본 열까지의 변수 정의')&&!html.includes('Location')&&!html.includes('split'));
+  assert.ok(html.includes('strip')&&html.includes('앞뒤 공백'));
   assert.ok(!html.includes('<button')&&!html.includes('<select'));
+});
+
+test('only Ex-situ has the lower explanation panel and height separator; In-situ has no reserved region', () => {
+  const ex=renderToStaticMarkup(React.createElement(TraceApp,{condition:'ex'}));
+  const inside=renderToStaticMarkup(React.createElement(TraceApp,{condition:'in-situ'}));
+  assert.ok(ex.includes('workspace-ex-situ')&&ex.includes('코드 자연어 설명')&&ex.includes('코드·테이블과 설명 높이 조절'));
+  assert.ok(inside.includes('workspace-in-situ')&&!inside.includes('코드 자연어 설명')&&!inside.includes('divider-top'));
+  assert.ok(!ex.includes('reserved-pane')&&!inside.includes('reserved-pane'));
+});
+
+test('Ex-situ describes the selected code with matching line references and excludes stale execution metadata', () => {
+  const selected={id:'step-2',execution_version:'run-2',code_version:2,nl_explanation:{title:'도시 정리',text:'입지에서 도시를 추출합니다.'},transformations:[
+    {id:'current',execution_version:'run-2',code_version:2,code:"parts[0].str.strip()",code_location:{start:11,end:11},output_columns:['City'],description:{text:'원본 Location을 분할해 첫 부분의 공백을 제거합니다.',source:'llm'}},
+    {id:'old',execution_version:'run-1',code_version:1,code_location:{start:4,end:4},output_columns:['Old'],description:{text:'오래된 설명',source:'llm'}},
+  ]};
+  const html=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2,onRefresh(){}}));
+  assert.ok(html.includes('Step 02')&&html.includes('도시 정리')&&html.includes('L11')&&html.includes('원본 Location'));
+  assert.ok(html.includes('코드 자연어 설명 갱신')&&!html.includes('오래된 설명'));
+  assert.ok(html.includes('<pre')&&html.includes('strip')&&!html.includes('변환 설명 보기'));
+});
+
+test('only the revised Step receives a candidate immediately after its baseline, in both conditions', () => {
+  const run={id:'confirmed',stages:[{id:'input',kind:'input'},...[1,2,3].map(n=>({id:`s${n}`,kind:'derive',code:`code${n}`}))]};
+  const preview={id:'p',base_run_id:'confirmed',step_id:'s2',label:'Step 2a',stage:{id:'s2',kind:'derive',code:'candidate'},step_code:'candidate # source'};
+  const items=workspaceSteps(run,preview);
+  assert.deepEqual(items.map(x=>x.viewLabel),['Step 1','Step 2','Step 2a','Step 3']);
+  assert.deepEqual(items.map(x=>x.isCandidate),[false,false,true,false]);
+  assert.equal(items[2].viewCode,'candidate # source');
+  assert.equal(items[1].code,'code2');
+  assert.deepEqual(workspaceSteps(run,{...preview,base_run_id:'stale'}).map(x=>x.viewLabel),['Step 1','Step 2','Step 3']);
+  assert.equal(workspaceSteps(run,null).length,3);
+});
+
+test('Ex-situ and the In-situ selected transformation render the same local prose and code without definitions', () => {
+  const item={id:'t',code:"parts[0].str.strip()",code_location:{start:11,end:11,start_column:12},output_columns:['City'],input_columns:[],description:{source:'llm',text:'원본 Location에서 도시를 추출하고 공백을 제거합니다.'},source_context:{complete:true,unresolved:[],definitions:[{symbol:'parts',code:"parts = input_df['Location'].str.split(',')",code_location:{start:8,end:8}}]}};
+  const selected={...stage,id:'s2',transformations:[item],execution_version:'candidate',code_version:2};
+  item.execution_effects=[{columns:{added:[],changed:['City'],removed:[]},rows:{added:[],changed:[],removed:[]},cells:{added:{},changed:{},removed:{}}}];
+  const inItem=transformations(selected,{kind:'changed',column:'City'})[0];
+  const shared=renderToStaticMarkup(React.createElement(TransformationDetails,{item:inItem}));
+  const ex=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2,label:'Step 2a',revision:{label:'Step 2a',request:'도시를 정리해줘'}}));
+  assert.ok(ex.includes(shared));
+  assert.ok(!shared.includes('source-definitions')&&!shared.includes('split'));
+  assert.ok(ex.includes('Step 2a')&&ex.includes('수정 내용')&&ex.includes('도시를 정리해줘'));
+});
+
+test('candidate table changes compare confirmed output to candidate output instead of candidate input', () => {
+  const input=table(['x'],[['a',{x:1}]]);
+  const original=table(['x','y'],[['a',{x:1,y:2}]]);
+  const candidate=table(['x','y'],[['a',{x:1,y:3}]]);
+  const selected={...stage,input,table:candidate};
+  const html=renderToStaticMarkup(React.createElement(WorkspaceTable,{data:candidate,identity:'preview',stage:selected,comparison:original}));
+  assert.ok(html.includes('data-change="changed"'));
+  assert.ok(!html.includes('data-change="added"'));
+});
+
+test('composer Step is read-only with no scope dropdown', () => {
+  for(const condition of ['ex','in-situ']) {
+    const html=renderToStaticMarkup(React.createElement(TraceApp,{condition}));
+    assert.ok(html.includes('현재 관찰 중인 Step')&&html.includes('composer-step'));
+    assert.ok(!html.includes('aria-label="수정 범위"'));
+  }
 });

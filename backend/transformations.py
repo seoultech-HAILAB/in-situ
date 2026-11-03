@@ -1,15 +1,15 @@
 """Source-level transformations, independent of optional cell-provenance replay.
 
-Locations describe syntax, not evidence that a branch ran or that a cell came
-from a particular input. No program is rewritten or evaluated by this module.
+Locations describe syntax. Execution effects are attached separately from
+observed operation records. No program is rewritten or evaluated by this module.
 """
 import ast
 import copy
 import hashlib
 import json
-from .source_dependencies import SourceDependencies, VERSION as SOURCE_CONTEXT_VERSION
+from .transformation_effects import bind as bind_execution_effects
 
-VERSION = 'ast-transformations-v1'
+VERSION = 'ast-transformations-v2'
 METHODS = {
     'assign':'derive', 'astype':'convert', 'to_numeric':'convert', 'to_datetime':'convert',
     'map':'derive', 'apply':'derive', 'applymap':'derive', 'transform':'derive',
@@ -192,9 +192,12 @@ def extract(code, indices, tree=None, output_variable=None):
             expression(node.value, targets, variable, statement, callsite)
             selector = node.slice.elts[0] if isinstance(node.slice, ast.Tuple) else node.slice
             if isinstance(selector, (ast.Compare, ast.BoolOp, ast.BinOp, ast.UnaryOp)) or isinstance(selector, ast.Call):
-                emit(node, 'filter', 'filter', targets, variable, statement, callsite)
+                emit(node, 'filter', 'filter', [], variable, statement, callsite)
             elif isinstance(node.slice, (ast.List, ast.Tuple)):
-                emit(node, 'select', 'select', columns(node, bindings), variable, statement, callsite)
+                if not (isinstance(node.value,ast.Attribute) and node.value.attr in ('loc','iloc')):
+                    emit(node, 'select', 'select', columns(node, bindings), variable, statement, callsite)
+            if isinstance(node.value,ast.Attribute) and node.value.attr=='loc' and isinstance(node.slice,ast.Tuple) and len(node.slice.elts)==2 and isinstance(node.slice.elts[1],(ast.List,ast.Tuple)):
+                emit(node,'select','select',columns(node,bindings),variable,statement,callsite)
         elif not isinstance(node, (ast.Lambda, ast.FunctionDef)):
             for child in ast.iter_child_nodes(node): expression(child, targets, variable, statement, callsite)
         return len(found) > begin
@@ -249,15 +252,12 @@ def extract(code, indices, tree=None, output_variable=None):
                 contributing.add(i)
                 if isinstance(node, ast.Assign) and all(isinstance(t,ast.Name) for t in node.targets): live -= {t.id for t in node.targets}
                 live.update(n.id for n in ast.walk(node) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Load))
-    unique = []; seen = set();dependencies=SourceDependencies(code,tree,describe=lambda method,node: description(method,METHODS.get(method,'call'),node,[]))
+    unique = []; seen = set()
     for item in found:
         identity = json.dumps([item['code_location'], item['call_location'] if 'call_location' in item else None, item['code'], item['output_columns']], sort_keys=True)
         if identity in seen: continue
         seen.add(identity); item['id'] = 'transform-' + hashlib.sha256(identity.encode()).hexdigest()[:16]
         item['contributes_to_output'] = item['statement_index'] in contributing
-        item['source_context']=dependencies.context(item)
-        if item['source_context']['original_columns']:
-            item['description']={'text':item['source_context']['text'],'source':'ast'}
         unique.append(item)
     return unique
 
@@ -267,6 +267,17 @@ def annotate_run(run):
     code = run.get('code', '')
     try: tree = ast.parse(code)
     except SyntaxError: return run
+    code_hash=hashlib.sha256(code.encode()).hexdigest()
+    current=(run.get('transformations_version')==VERSION and run.get('transformations_code_hash')==code_hash)
+    if not current:
+        # Invalidate persisted prose from the previous explanation policy.
+        for key in ('explanation_status','explanation_error','explanation_meta'):run.pop(key,None)
+        run['operations']=[{k:v for k,v in op.items() if k not in ('nl_explanation','column_explanations')} for op in run.get('operations',[])]
+        if run.get('pipeline'):
+            run['pipeline']={**run['pipeline'],'steps':[
+                {**spec,'transformations':extract(code,spec['statement_indices'],tree,
+                    output_variable=spec.get('observed_output_variable') or spec.get('output_variable'))}
+                for spec in run['pipeline'].get('steps',[])]}
     plan = run.get('pipeline', {}).get('steps', [])
     for stage in run.get('stages', [])[1:]:
         spec = next((s for s in plan if s['id'] == stage['id']), None)
@@ -276,19 +287,23 @@ def annotate_run(run):
             indices = [i for i,n in enumerate(tree.body) if loc.get('start', 0) <= n.lineno <= loc.get('end', -1)]
         output = stage.get('output_variable') or (spec or {}).get('observed_output_variable') or (spec or {}).get('output_variable')
         fresh = extract(code, indices, tree, output_variable=output)
-        old = {t['id']:t for t in stage.get('transformations', [])} if stage.get('transformations_version') == VERSION else {}
+        if not current:
+            stage.pop('nl_explanation',None);stage.pop('column_explanations',None)
+            stage['operations']=[{k:v for k,v in op.items() if k not in ('nl_explanation','column_explanations')} for op in stage.get('operations',[])]
+        old = {t['id']:t for t in stage.get('transformations', [])} if current else {}
         for item in fresh:
             prior = old.get(item['id'])
-            if prior and prior.get('code') == item['code'] and prior.get('execution_version') == run.get('id') and prior.get('code_version') == run.get('code_version') and prior.get('source_context',{}).get('fingerprint')==item['source_context'].get('fingerprint'):
+            if prior and prior.get('code') == item['code'] and prior.get('execution_version') == run.get('id') and prior.get('code_version') == run.get('code_version'):
                 item['description'] = copy.deepcopy(prior['description'])
             item['execution_version'] = run.get('id'); item['code_version'] = run.get('code_version')
-        stage['transformations'] = fresh; stage['transformations_version'] = VERSION
+        stage['transformations'] = bind_execution_effects(fresh,stage,tree); stage['transformations_version'] = VERSION
     run['transformations_version'] = VERSION
+    run['transformations_code_hash'] = code_hash
     return run
 
 
 def targets(run):
     run = {**run, 'stages':[dict(stage) for stage in run.get('stages', [])]}
     annotate_run(run)
-    return [{'step_no':i, 'transformation_no':j, **{k:t[k] for k in ('kind','code','code_location','output_columns','input_columns','source_context')}}
+    return [{'step_no':i, 'transformation_no':j, **{k:t[k] for k in ('kind','code','code_location','output_columns','input_columns')}}
             for i,s in enumerate(run.get('stages', [])[1:], 1) for j,t in enumerate(s.get('transformations', []), 1)]

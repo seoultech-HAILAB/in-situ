@@ -2,22 +2,22 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { fmt, type Stage, type Table } from "@/lib/trace";
-import { workspaceDiff, type ChangeTarget, type Transformation } from "./workspace-diff";
+import { workspaceDiff, type ChangeTarget } from "./workspace-diff";
 import { CHANGE_LABEL, TransformationBubble } from "./transformation-bubble";
 
 const cellValue = (value: Parameters<typeof fmt>[0]) => value === undefined ? <span className="absent-value">—</span> : value === null ? <span className="null-value">null</span> : typeof value === "boolean" ? String(value) : fmt(value);
 
 /** Deleted values are visible annotations; the executed result stays unchanged. */
-export function WorkspaceTable({ data, identity, stage, onRefresh, refreshing, onTransformationSelect }: { data: Table; identity: string; stage?: Stage; onRefresh?: () => void; refreshing?: boolean; onTransformationSelect?: (item: Transformation) => void }) {
+export function WorkspaceTable({ data, identity, stage, comparison, onRefresh, refreshing }: { data: Table; identity: string; stage?: Stage; comparison?: Table; onRefresh?: () => void; refreshing?: boolean }) {
   const viewport = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<{ anchor: HTMLElement; target: ChangeTarget; key: string } | null>(null);
-  const diff = useMemo(() => stage ? workspaceDiff(stage) : null, [stage]);
+  const diff = useMemo(() => stage ? workspaceDiff(stage, comparison) : null, [stage, comparison]);
   const dismiss = useCallback(() => setPicked(null), []);
   useEffect(() => { viewport.current?.scrollTo({ top: 0, left: 0 }); setPicked(null); }, [identity]);
   function trigger(target: ChangeTarget, key: string, label: string, children: ReactNode) {
     return <button type="button" className="change-trigger" aria-label={`${label} · ${CHANGE_LABEL[target.kind]} · 변환 설명 보기`}
       aria-haspopup="dialog" aria-expanded={picked?.key === key} data-active={picked?.key === key}
-      onClick={event => { const anchor = event.currentTarget; setPicked(current => current?.key === key ? null : { anchor, target, key }); }}>{children}</button>;
+      onClick={event => { const anchor = event.currentTarget; setPicked(current => current?.key === key ? null : { anchor, target: { ...target, revision: !!comparison }, key }); }}>{children}</button>;
   }
   return <>
     {diff && <div className="table-change-legend" aria-label="테이블 변경 표시">
@@ -39,6 +39,6 @@ export function WorkspaceTable({ data, identity, stage, onRefresh, refreshing, o
       {!(diff ? diff.rows.length : data.rows.length) && <div className="empty-table-label">0행</div>}
     </div>
     {diff && (diff.removedRows > 0 || diff.removedColumns > 0) && <div className="removed-data-note">삭제된 {diff.removedRows > 0 ? `${diff.removedRows}행` : ""}{diff.removedRows > 0 && diff.removedColumns > 0 ? " · " : ""}{diff.removedColumns > 0 ? `${diff.removedColumns}열` : ""}은 빨간색으로 남겨 표시합니다. 결과 CSV에는 포함되지 않습니다.</div>}
-    {picked && stage && <TransformationBubble anchor={picked.anchor} target={picked.target} stage={stage} onClose={dismiss} onRefresh={onRefresh} refreshing={refreshing} onSelect={onTransformationSelect} />}
+    {picked && stage && <TransformationBubble anchor={picked.anchor} target={picked.target} stage={stage} onClose={dismiss} onRefresh={onRefresh} refreshing={refreshing} />}
   </>;
 }
