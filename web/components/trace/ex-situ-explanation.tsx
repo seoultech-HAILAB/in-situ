@@ -37,16 +37,16 @@ function changeHeadings(item: ExplanationItem): { names: string[]; kind?: Change
   return [{ names: item.output_columns.length ? item.output_columns : ["열 대응 미확인"] }];
 }
 
-export function ExSituExplanation({ step, number, label }: {
-  step?: Stage; number: number; label?: string;
+export function ExSituExplanation({ step, number, label, inputView = false }: {
+  step?: Stage; number: number; label?: string; inputView?: boolean;
 }) {
   const items = step ? availableTransformations(step) : [];
   return <section className="explanation-pane" aria-label="코드 자연어 설명">
     <div className="pane-toolbar"><span>코드 설명</span>
-      {step && <span className="explanation-step-label">{label ?? `Step ${String(number).padStart(2,"0")}`}</span>}
+      {(step || inputView) && <span className="explanation-step-label">{label ?? `Step ${String(number).padStart(2,"0")}`}</span>}
     </div>
     <div className="explanation-scroll" key={`${step?.execution_version}:${step?.id}`}>
-      {!step ? <div className="explanation-empty">과제를 실행하면 선택한 Step의 코드 설명이 여기에 표시됩니다.</div> : <>
+      {!step ? inputView ? null : <div className="explanation-empty">과제를 실행하면 선택한 Step의 코드 설명이 여기에 표시됩니다.</div> : <>
         <DirectUsedTables tables={step.direct_tables ?? []} identity={`${step.execution_version}:${step.id}`} />
         {items.length > 0 ? <ol className="explanation-operations">{items.map(item => <li key={item.id}>
           <h3 className="explanation-change-heading">{changeHeadings(item).map((heading,index) => <span key={index}

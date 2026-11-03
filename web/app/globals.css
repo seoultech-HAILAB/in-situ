@@ -295,3 +295,11 @@
 .workspace-ex-situ .step-code .python-code, .workspace-ex-situ .transformation-code .python-code { --python-gutter-bg: #fff; }
 .workspace-ex-situ .transformation-code { border-color: #e4e6e9; }
 .workspace-ex-situ .transformation-operation p { color: #24292f; }
+.code-input-section { margin-bottom: 12px; border-bottom: 1px solid #dfe5eb; }
+.input-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 16px; background: #edf1f5; color: #4e6172; font-size: 11px; font-weight: 600; }
+.input-section-heading > span:last-child { color: #8b969f; font-size: 10px; font-weight: 400; }
+.input-table-heading { display: flex; align-items: baseline; gap: 12px; width: 100%; padding: 10px 16px; text-align: left; border-left: 2px solid transparent; border-top: 1px solid #eef1f4; background: #fff; cursor: pointer; }
+.input-table-heading:hover { background: #f5f8fa; }
+.input-table-heading[data-selected=true] { border-left-color: var(--primary); background: #e4edf3; }
+.input-table-name { flex: 1; min-width: 0; font-size: 11px; color: #4d606f; overflow-wrap: anywhere; }
+.input-table-shape { flex-shrink: 0; font-size: 10px; color: #8b969f; }

@@ -28,6 +28,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [taskId, setTaskId] = useState("");
   const [stepId, setStepId] = useState("");
+  const [inputViewId, setInputViewId] = useState<string | null>(null);
   const [request, setRequest] = useState("");
   const [booting, setBooting] = useState(true);
   const [busy, setBusy] = useState("");
@@ -43,13 +44,18 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   const inFlight = useRef(false);
   const run = session?.run;
   const preview = session?.pending_revision;
+  const inputViews = session ? [
+    { viewId: "view:input:main", viewLabel: "Input", name: "input_df", tableView: "input", table: session.input },
+    ...Object.entries(session.sources ?? {}).map(([name,table]) => ({ viewId: `view:input:source:${name}`, viewLabel: `Input · ${name}`, name, tableView: `source:${name}`, table })),
+  ] : [];
+  const selectedInput = inputViews.find(view => view.viewId === inputViewId);
   // Code blocks and tables use the same actual execution stage.
   const steps = useMemo(() => workspaceSteps(run, preview), [run, preview]);
   const finalStep = steps.filter(stage => !stage.isCandidate).at(-1);
-  const viewingOutput = condition === "in-situ" && stepId === OUTPUT_VIEW_ID && !!finalStep;
+  const viewingOutput = !selectedInput && condition === "in-situ" && stepId === OUTPUT_VIEW_ID && !!finalStep;
   const step = viewingOutput ? finalStep : steps.find((stage) => stage.viewId === stepId) ?? steps[0];
-  const selectedViewId = viewingOutput ? OUTPUT_VIEW_ID : step?.viewId;
-  const views = [...steps, ...(condition === "in-situ" && finalStep ? [{ viewId: OUTPUT_VIEW_ID, viewLabel: "Output" }] : [])];
+  const selectedViewId = selectedInput?.viewId ?? (viewingOutput ? OUTPUT_VIEW_ID : step?.viewId);
+  const views = [...inputViews, ...steps, ...(condition === "in-situ" && finalStep ? [{ viewId: OUTPUT_VIEW_ID, viewLabel: "Output" }] : [])];
   const viewIndex = views.findIndex(view => view.viewId === selectedViewId);
   const observedVersion = step?.execution_version ?? run?.id;
   const originalStep = run?.stages.find(stage => stage.id === step?.id);
@@ -119,7 +125,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
   useEffect(() => {
     codeList.current?.querySelector<HTMLElement>("[data-selected=true]")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [selectedViewId, observedVersion]);
-  useEffect(() => { setTableView("output"); }, [selectedViewId, observedVersion]);
+  useEffect(() => { setTableView(selectedInput?.tableView ?? "output"); }, [observedVersion]);
   useEffect(() => { chatEnd.current?.scrollIntoView({ block: "nearest" }); }, [pending, failures, run?.id, preview?.id, preview?.status]);
 
   // Follow ancestry so undo and forks show only the current execution's history.
@@ -156,6 +162,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
       });
       accept(next);
       setStepId("");
+      setInputViewId(null);
       setFailures([]);
       setRequest("");
       if (next.status !== "ready") throw new Error(next.error?.message || "코드를 실행하지 못했습니다.");
@@ -164,7 +171,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
 
   function revise() {
     const text = request.trim();
-    if (!session || !run || !step || preview || !text || !health?.api_configured || inFlight.current || taskChanged) return;
+    if (!session || !run || !step || selectedInput || preview || !text || !health?.api_configured || inFlight.current || taskChanged) return;
     const submitted: Message = { id: crypto.randomUUID(), request: text, response: "" };
     void perform("수정하고 실행하는 중", async () => {
       setPending(submitted);
@@ -184,7 +191,17 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
     });
   }
 
-  function selectStep(id: string) { setStepId(id); }
+  function selectStep(id: string) {
+    const input = inputViews.find(view => view.viewId === id);
+    setInputViewId(input?.viewId ?? null);
+    if (!input) setStepId(id);
+    setTableView(input?.tableView ?? "output");
+  }
+
+  function selectTable(id: string) {
+    setInputViewId(inputViews.find(view => view.tableView === id)?.viewId ?? null);
+    setTableView(id);
+  }
 
   function decide(action: "approve" | "deny") {
     if (!session || !preview) return;
@@ -241,9 +258,9 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
     ...Object.entries(session?.sources || {}).map(([name, table]) => ({ id: `source:${name}`, label: name, table })),
     ...(session?.target ? [{ id: "target", label: "Target", table: session.target }] : [])];
   const visibleTable = tables.find((item) => item.id === tableView)?.table;
-  const canSend = !!request.trim() && !!run && !!step && !preview && !busy && !!health?.api_configured && !taskChanged;
-  const tableContent = visibleTable ? <WorkspaceTable key={`${observedVersion}:${selectedViewId}:${tableView}`} data={visibleTable} identity={`${observedVersion}:${selectedViewId}:${tableView}`} stage={condition === "in-situ" && !viewingOutput && tableView === "output" ? step : undefined}
-    comparison={!viewingOutput && step?.isCandidate ? originalStep?.table : undefined} /> : <div className="pane-empty" />;
+  const canSend = !!request.trim() && !!run && !!step && !selectedInput && !preview && !busy && !!health?.api_configured && !taskChanged;
+  const tableContent = visibleTable ? <WorkspaceTable key={`${observedVersion}:${selectedViewId}:${tableView}`} data={visibleTable} identity={`${observedVersion}:${selectedViewId}:${tableView}`} stage={condition === "in-situ" && !selectedInput && !viewingOutput && tableView === "output" ? step : undefined}
+    comparison={!selectedInput && !viewingOutput && step?.isCandidate ? originalStep?.table : undefined} /> : <div className="pane-empty" />;
 
   return (
     <div className={`workspace workspace-${condition === "in-situ" ? "in-situ" : "ex-situ"}`} ref={root} style={{ "--code-size": `${sizes.code}%`, "--chat-size": `${sizes.chat}%`, "--top-size": `${sizes.top}%` } as CSSProperties}>
@@ -270,6 +287,13 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
             <section className="code-pane" aria-label="Step별 코드">
               <div className="pane-toolbar"><span>Python</span><span className="pane-meta">{run ? `${run.stages.length - 1} steps` : ""}</span></div>
               <div className="code-list" ref={codeList} aria-busy={!!busy}>
+                {!!inputViews.length && <section className="code-input-section" aria-label="입력 테이블 목록">
+                  <h2 className="input-section-heading"><span>Input</span><span>{inputViews.length}개 테이블</span></h2>
+                  {inputViews.map(input => <button className="input-table-heading" key={input.viewId} aria-label={`${input.viewLabel} 입력 표 보기`}
+                    aria-pressed={input.viewId === selectedViewId} data-selected={input.viewId === selectedViewId} onClick={() => selectStep(input.viewId)}>
+                    <span className="input-table-name">{input.name}</span><span className="input-table-shape">{input.table.rows.length}행 × {input.table.columns.length}열</span>
+                  </button>)}
+                </section>}
                 {steps.map((stage,index) => <article className={`code-step ${stage.isCandidate ? "code-step-candidate" : ""}`} key={stage.viewId} data-selected={stage.viewId === selectedViewId}
                   style={stage.isCandidate ? undefined : { "--step-heading-bg": STEP_HEADER_TONES[((stage.order || index+1)-1)%STEP_HEADER_TONES.length].background, "--step-heading-selected": STEP_HEADER_TONES[((stage.order || index+1)-1)%STEP_HEADER_TONES.length].selected } as CSSProperties}>
                   <button className="code-step-heading" aria-label={`${stage.viewLabel} 선택`} aria-pressed={stage.viewId === selectedViewId} onClick={() => selectStep(stage.viewId)}>
@@ -287,19 +311,19 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
               </div>
             </section>
             {separator("code", "코드와 테이블 너비 조절")}
-            <section className="table-pane" aria-label={viewingOutput ? "최종 결과 테이블" : "중간 테이블"}>
+            <section className="table-pane" aria-label={selectedInput ? "입력 테이블" : viewingOutput ? "최종 결과 테이블" : "중간 테이블"}>
               <div className="pane-toolbar">
                 <Button variant="ghost" size="icon-xs" aria-label="이전 Step" disabled={viewIndex <= 0} onClick={() => selectStep(views[viewIndex - 1].viewId)}><ChevronLeft /></Button>
-                <select className="step-select" aria-label="테이블 Step 선택" value={selectedViewId ?? ""} disabled={!steps.length} onChange={(event) => selectStep(event.target.value)}>
-                  {!steps.length && <option value="">Step</option>}
+                <select className="step-select" aria-label="테이블 Step 선택" value={selectedViewId ?? ""} disabled={!views.length} onChange={(event) => selectStep(event.target.value)}>
+                  {!views.length && <option value="">Step</option>}
                   {views.map((view) => <option key={view.viewId} value={view.viewId}>{view.viewLabel}</option>)}
                 </select>
                 <Button variant="ghost" size="icon-xs" aria-label="다음 Step" disabled={viewIndex < 0 || viewIndex >= views.length - 1} onClick={() => selectStep(views[viewIndex + 1].viewId)}><ChevronRight /></Button>
-                <select className="table-view-select" aria-label="표 선택" disabled={!run} value={tableView} onChange={(event) => setTableView(event.target.value)}>{tables.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
+                <select className="table-view-select" aria-label="표 선택" disabled={!session} value={tableView} onChange={(event) => selectTable(event.target.value)}>{tables.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
                 {visibleTable && <span className="pane-meta table-shape">{visibleTable.rows.length}행 × {visibleTable.columns.length}열</span>}
               </div>
-              {step?.isCandidate && tableView === "output" && <div className="candidate-comparison-note">{step.viewLabel} · {originalStep ? `Step ${originalStep.order} 수정 전 결과와 비교` : "수정 후보 실행 결과"}</div>}
-              {condition === "in-situ" && !viewingOutput && tableView === "output" && !!step?.direct_tables?.length ? <div className="table-result-stack">
+              {!selectedInput && step?.isCandidate && tableView === "output" && <div className="candidate-comparison-note">{step.viewLabel} · {originalStep ? `Step ${originalStep.order} 수정 전 결과와 비교` : "수정 후보 실행 결과"}</div>}
+              {condition === "in-situ" && !selectedInput && !viewingOutput && tableView === "output" && !!step?.direct_tables?.length ? <div className="table-result-stack">
                 <div className="direct-table-result">{tableContent}</div>
                 <DirectUsedTables tables={step.direct_tables} identity={`${observedVersion}:${step.viewId}`} />
               </div> : tableContent}
@@ -307,7 +331,7 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
           </div>
           {condition === "ex" && <>
             {separator("top", "코드·테이블과 설명 높이 조절")}
-            <ExSituExplanation step={step} number={step?.order ?? 0} label={step?.viewLabel} />
+            <ExSituExplanation step={selectedInput ? undefined : step} number={step?.order ?? 0} label={selectedInput?.viewLabel ?? step?.viewLabel} inputView={!!selectedInput} />
           </>}
         </div>
         {separator("chat", "수정 요청 영역 너비 조절")}
@@ -338,10 +362,10 @@ export function TraceApp({ condition = "ex" }: { condition?: "ex" | "in-situ" })
             {session?.status === "failed" && !pending && <p className="composer-note" role="status">실행에 실패했습니다. 마지막 성공 결과를 표시합니다.</p>}
             {health && !health.api_configured && <p className="composer-note">수정 요청을 사용하려면 서버의 .env에 API 키를 설정하세요.</p>}
             <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); revise(); }}>
-              <textarea ref={composer} aria-label="수정 요청 입력" placeholder={preview ? "후보 승인 또는 거부 후 새 수정을 요청하세요" : "수정할 내용을 입력하세요"} value={request} rows={3} maxLength={5000} disabled={!run || !!busy || !!preview || taskChanged}
+              <textarea ref={composer} aria-label="수정 요청 입력" placeholder={selectedInput ? "수정할 Step을 선택하세요" : preview ? "후보 승인 또는 거부 후 새 수정을 요청하세요" : "수정할 내용을 입력하세요"} value={request} rows={3} maxLength={5000} disabled={!run || !!selectedInput || !!busy || !!preview || taskChanged}
                 onChange={(event) => { setRequest(event.target.value); event.target.style.height = "auto"; event.target.style.height = `${Math.min(220, event.target.scrollHeight)}px`; }}
                 onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); revise(); } }} />
-              <div className="composer-tools"><span className="composer-step" aria-label="현재 관찰 중인 Step" aria-live="polite">{step?.viewLabel ?? "Step —"}</span><Button type="submit" size="icon-sm" aria-label="수정 요청 보내기" title="보내기 · Enter" disabled={!canSend}>{pending ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div>
+              <div className="composer-tools"><span className="composer-step" aria-label={selectedInput ? "현재 관찰 중인 입력" : "현재 관찰 중인 Step"} aria-live="polite">{selectedInput?.viewLabel ?? step?.viewLabel ?? "Step —"}</span><Button type="submit" size="icon-sm" aria-label="수정 요청 보내기" title="보내기 · Enter" disabled={!canSend}>{pending ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div>
             </form>
           </div>
         </section>
