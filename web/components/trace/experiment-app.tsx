@@ -148,8 +148,8 @@ export function ExperimentApp({ condition }: { condition: "in-situ" | "ex" }) {
   if (research) return <TraceApp condition={condition} />;
   const remaining = state?.deadline ? Math.max(0, Math.ceil(state.deadline - now)) : null;
   const active = state && ["tutorial", "preparing", "task"].includes(state.phase) && hasWorkspace && (state.phase !== "task" || remaining !== 0);
-  const instructions = state?.phase === "tutorial" ? state.tutorial_task : state?.tasks[state.task_index];
   const toolbar = <>
+    <span className="workspace-mode">situ</span>
     <strong className="study-task-number">{state?.phase === "tutorial" ? "Tutorial" : `Task ${(state?.task_index ?? 0) + 1}`}</strong>
     <span className={`study-timer ${remaining !== null && remaining <= 60 ? "study-timer-urgent" : ""}`} role="timer" aria-label="남은 시간">{state?.phase === "tutorial" ? "연습 · 시간 제한 없음" : clock(remaining ?? 900)}</span>
     <div className="toolbar-spacer" />
@@ -171,9 +171,6 @@ export function ExperimentApp({ condition }: { condition: "in-situ" | "ex" }) {
             state.phase === "ready" ? <><h1>Task {state.task_index + 1}</h1><button className="study-button" onClick={() => void perform(startTask)}>과제 시작</button></> :
               <><h1>과제 시간이 종료되었습니다</h1><p>다음 화면으로 이동 중입니다.</p></>}
       </main>}
-    {active && !busy && instructions && <details className="study-task-instructions" onToggle={event => logStudy(event.currentTarget.open ? "instructions.open" : "instructions.close", { task_id: instructions.id, placement: "workspace", guide_version: TASK_GUIDE_VERSION })}>
-      <summary>{state?.phase === "tutorial" ? "튜토리얼 과제 안내" : "과제 안내"}</summary><div><ParticipantTaskGuide taskId={instructions.id} /></div>
-    </details>}
     {showTutorialGuide && state && <StartGuideDialog key={`tutorial:${state.id}`} title="튜토리얼 시작" taskId={state.tutorial_task.id} timed={false} onStart={() => {
       try { localStorage.setItem(`trace-tutorial-guide:${state.id}`, TASK_GUIDE_VERSION); } catch { /* Keep the current acknowledgement in memory. */ }
       logStudy("tutorial.instructions_confirmed", { task_id: state.tutorial_task.id, guide_version: TASK_GUIDE_VERSION });

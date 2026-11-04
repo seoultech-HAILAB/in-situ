@@ -78,7 +78,7 @@ def test_native_loop_merges_keep_each_actual_operand_snapshot():
     assert all(item['uses'][0]['line']==4 for item in stage['direct_tables'])
     assert all(item['name']=='lookup' for item in stage['direct_tables'])
     assert len(stage['direct_table_calls'])==2
-    assert run['direct_table_observations_version']=='native-table-calls-v1'
+    assert run['direct_table_observations_version']=='native-table-calls-v2'
 
 
 def test_native_calls_exclude_dead_loop_branches_overwritten_results_and_unchanged_later_steps():
@@ -122,3 +122,45 @@ def test_replay_ids_do_not_duplicate_plain_auxiliary_cards():
     stage['operation_observations'].append(duplicate)
     annotate_run(run)
     assert len(stage['direct_tables'])==1
+
+
+def test_single_source_read_is_shown_even_without_a_multi_table_operation():
+    run=execute("result = tables['rates'].set_index('key').T")
+    stage=run['stages'][1]
+    assert [item['name'] for item in stage['direct_tables']]==['rates']
+    item=stage['direct_tables'][0]
+    assert item['table']['columns']==['key','rate'] and len(item['table']['rows'])==2
+    assert item['uses'][0]['line']==1 and '행과 열' in item['uses'][0]['text']
+    assert stage['direct_table_reads'][0]['code']=="tables['rates']"
+
+
+def test_source_reads_require_actual_execution_and_contribution_to_the_output():
+    run=execute("unused = tables['unused'].copy()\nresult = tables['unused'].copy() if False else tables['rates'].copy()")
+    assert [item['name'] for item in run['stages'][1]['direct_tables']]==['rates']
+    assert [item['name'] for item in run['stages'][1]['direct_table_reads']]==['unused','rates']
+    overwritten=execute("result = tables['rates'].copy()\nresult = input_df.copy()")
+    assert overwritten['stages'][1]['direct_tables']==[]
+
+
+def test_dynamic_source_key_and_later_scalar_influence_stay_separate():
+    code="key = 'rates'\nrates = tables[key].copy()\nfactor = rates['rate'].mean()\nresult = input_df.assign(scaled=input_df['x'] * factor)"
+    groups=[{'statement_indices':[0,1,2],'output_variable':'rates'},{'statement_indices':[3],'output_variable':'result'}]
+    run=execute(code,groups)
+    assert [item['name'] for item in run['stages'][1]['direct_tables']]==['rates']
+    assert run['stages'][2]['direct_tables']==[]
+
+
+def test_source_reads_do_not_duplicate_cleaned_combination_operands():
+    code="lookup = tables['rates'].copy()\nlookup['rate'] *= 2\nresult = input_df.merge(lookup, on='key')"
+    items=execute(code)['stages'][1]['direct_tables']
+    assert [item['name'] for item in items]==['lookup']
+    assert [row['values']['rate'] for row in items[0]['table']['rows']]==[4,6]
+
+
+def test_a_missing_source_and_a_failed_combination_cannot_add_input_cards():
+    code="try:\n    result = tables['missing'].copy()\nexcept KeyError:\n    result = input_df.copy()"
+    stage=execute(code)['stages'][1]
+    assert stage['direct_table_reads']==[] and stage['direct_tables']==[]
+    code="try:\n    result = input_df.merge(tables['rates'], on='missing')\nexcept KeyError:\n    result = input_df.copy()"
+    stage=execute(code)['stages'][1]
+    assert stage['direct_table_reads'] and stage['direct_tables']==[]

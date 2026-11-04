@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type Keyboard
 import { logStudy, studyContext, newEventId, studyHeaders } from "@/lib/study-telemetry";
 import { ArrowUp, Check, ChevronLeft, ChevronRight, Download, LoaderCircle, Play, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { api as traceApi, PythonCode, sourceSnippet, taskLabel, type Health, type Session, type TaskInput, type TaskSummary } from "@/lib/trace";
+import { api as traceApi, PythonCode, sourceSnippet, taskLabel, type Health, type Session, type TaskInput, type TaskSummary, type RevisionHistoryEntry } from "@/lib/trace";
 import { WorkspaceTable } from "./workspace-table";
 import { ExSituExplanation } from "./ex-situ-explanation";
 import { DirectUsedTables } from "./direct-used-tables";
@@ -14,6 +14,7 @@ import { t07StepFilter } from "./t07-step-filter";
 type Message = { id: string; request: string; response: string; failed?: boolean };
 type PanelSizes = { code: number; chat: number; top: number };
 const DEFAULT_SIZES: PanelSizes = { code: 50, chat: 25, top: 73 };
+const MAIN_INPUT_VIEW_ID = "view:input:main";
 const OUTPUT_VIEW_ID = "view:final-output";
 const STEP_HEADER_TONES = [
   { background: "#eaf4f1", selected: "#d5e9e2" },
@@ -30,7 +31,7 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [taskId, setTaskId] = useState("");
   const [stepId, setStepId] = useState("");
-  const [inputViewId, setInputViewId] = useState<string | null>(null);
+  const [inputViewId, setInputViewId] = useState<string | null>(MAIN_INPUT_VIEW_ID);
   const [request, setRequest] = useState("");
   const [booting, setBooting] = useState(true);
   const [busy, setBusy] = useState("");
@@ -38,7 +39,8 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
   const [pending, setPending] = useState<Message | null>(null);
   const [failures, setFailures] = useState<Message[]>([]);
   const [sizes, setSizes] = useState<PanelSizes>(DEFAULT_SIZES);
-  const [tableView, setTableView] = useState("output");
+  const [tableView, setTableView] = useState("input");
+  const [explanationHidden, setExplanationHidden] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const codeList = useRef<HTMLDivElement>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
@@ -47,7 +49,7 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
   const run = session?.run;
   const preview = session?.pending_revision;
   const inputViews = session ? [
-    { viewId: "view:input:main", viewLabel: "Input", name: "input_df", tableView: "input", table: session.input },
+    { viewId: MAIN_INPUT_VIEW_ID, viewLabel: "Input", name: "input_df", tableView: "input", table: session.input },
     ...Object.entries(session.sources ?? {}).map(([name,table]) => ({ viewId: `view:input:source:${name}`, viewLabel: `Input · ${name}`, name, tableView: `source:${name}`, table })),
   ] : [];
   const selectedInput = inputViews.find(view => view.viewId === inputViewId);
@@ -136,18 +138,20 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
     codeList.current?.querySelector<HTMLElement>("[data-selected=true]")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [selectedViewId, observedVersion]);
   useEffect(() => { setTableView(selectedInput?.tableView ?? "output"); }, [observedVersion]);
+  useEffect(() => { setExplanationHidden(false); }, [selectedViewId, observedVersion]);
   useEffect(() => { chatEnd.current?.scrollIntoView({ block: "nearest" }); }, [pending, failures, run?.id, preview?.id, preview?.status]);
   useEffect(() => {
     if (!managed || !session) return;
     const current = { session_id: session.id, run_id: run?.id, code_version: run?.code_version,
       step_id: step?.id, view_id: selectedViewId, table_view: tableView, candidate_id: preview?.id,
-      viewing_candidate: !!step?.isCandidate, code_location: step?.code_location };
+      viewing_candidate: !!step?.isCandidate, code_location: step?.code_location,
+      explanation_visible: condition === "ex" && !explanationHidden };
     studyContext(current);
     logStudy("view.context", current);
-  }, [session?.id, run?.id, selectedViewId, tableView, preview?.id]);
+  }, [session?.id, run?.id, selectedViewId, tableView, preview?.id, explanationHidden]);
 
   // Follow ancestry so undo and forks show only the current execution's history.
-  const messages = useMemo(() => {
+  const { messages, appliedRuns } = useMemo(() => {
     const history: Message[] = [];
     const reviewedRuns = new Set(session?.revision_history?.map(item => item.run_id));
     const runs = new Map(session?.runs.map((item) => [item.id, item]));
@@ -159,7 +163,7 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
       if (text && !reviewedRuns.has(current.id)) history.unshift({ id: current.id, request: text, response: `수정 후 다시 실행했습니다. · v${current.code_version}` });
       current = current.parent_run_id ? runs.get(current.parent_run_id) : undefined;
     }
-    return history;
+    return { messages: history, appliedRuns: seen };
   }, [session?.runs, session?.revision_history, run]);
 
   async function perform(label: string, work: () => Promise<void>) {
@@ -183,7 +187,8 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
       });
       accept(next);
       setStepId("");
-      setInputViewId(null);
+      setInputViewId(MAIN_INPUT_VIEW_ID);
+      setTableView("input");
       setFailures([]);
       setRequest("");
       if (next.status !== "ready") throw new Error(next.error?.message || "코드를 실행하지 못했습니다.");
@@ -213,8 +218,9 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
     });
   }
 
-  function selectStep(id: string) {
+  function selectStep(id: string, toggleExplanation = false) {
     const input = inputViews.find(view => view.viewId === id);
+    if (condition === "ex") setExplanationHidden(hidden => toggleExplanation && !input && id === selectedViewId ? !hidden : false);
     logStudy(input ? "view.input" : id === OUTPUT_VIEW_ID ? "view.output" : "view.step", { from: selectedViewId, to: id, input_name: input?.name });
     setInputViewId(input?.viewId ?? null);
     if (!input) setStepId(id);
@@ -235,6 +241,17 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
       accept(next);
       if (!next.pending_revision) setStepId(preview.step_id);
       if (next.pending_revision?.error) throw new Error(next.pending_revision.error);
+    });
+  }
+
+  function undoRevision(entry?: RevisionHistoryEntry) {
+    if (!session || !run || preview || inFlight.current || entry && entry.run_id !== run.id) return;
+    logStudy("revision.undo", { source: entry ? "chat" : "toolbar", run_id: run.id, candidate_id: entry?.id, step_id: entry?.step_id });
+    void perform("되돌리는 중", async () => {
+      const next = await api<Session>(`/sessions/${session.id}/undo`, { base_run_id: run.id });
+      accept(next);
+      setFailures([]);
+      if (entry) { setStepId(entry.step_id); setInputViewId(null); setTableView("output"); }
     });
   }
 
@@ -292,7 +309,7 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
     <div className={`workspace workspace-${condition === "in-situ" ? "in-situ" : "ex-situ"}`} ref={root} style={{ "--code-size": `${sizes.code}%`, "--chat-size": `${sizes.chat}%`, "--top-size": `${sizes.top}%` } as CSSProperties}>
       <header className="workspace-toolbar">
         {managed ? managed.toolbar : <>
-        <span className="workspace-mode">{condition === "in-situ" ? "In-situ" : "Ex-situ"}</span>
+        <span className="workspace-mode">situ</span>
         <select aria-label="과제 선택" className="task-select" disabled={booting || !!busy || !!preview} value={taskId} onChange={(event) => setTaskId(event.target.value)}>
           {!tasks.some((task) => task.id === taskId) && <option value={taskId}>{booting ? "불러오는 중…" : session?.study_task?.title || "과제 선택"}</option>}
           {tasks.map((task) => <option key={task.id} value={task.id}>{taskLabel(task)}</option>)}
@@ -304,9 +321,7 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
         </>}
         {!managed && <div className="toolbar-spacer" />}
         {run && <span className="version-label">v{run.code_version}</span>}
-        <Button size="icon-sm" variant="ghost" aria-label="이전 실행으로 되돌리기" title="되돌리기" disabled={!!busy || !!preview || !session || (!run?.parent_run_id && session.status !== "failed")} onClick={() => void perform("되돌리는 중", async () => {
-          if (session) { accept(await api<Session>(`/sessions/${session.id}/undo`, {})); setFailures([]); }
-        })}><RotateCcw /></Button>
+        <Button size="icon-sm" variant="ghost" aria-label="이전 실행으로 되돌리기" title="되돌리기" disabled={!!busy || !!preview || !session || (!run?.parent_run_id && session.status !== "failed")} onClick={() => undoRevision()}><RotateCcw /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="결과 CSV 다운로드" title="확정 결과 CSV 다운로드" disabled={!run || !!busy} onClick={() => void perform("결과 다운로드 중", async () => {
           const response = await fetch(`/api/sessions/${session!.id}/output.csv`, { headers: studyHeaders() });
           if (!response.ok) throw new Error("결과를 내려받지 못했습니다.");
@@ -316,7 +331,7 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
         })}><Download /></Button>
       </header>
       <div className="workspace-main">
-        <div className="workspace-left">
+        <div className={`workspace-left${condition === "ex" && explanationHidden ? " explanation-collapsed" : ""}`}>
           <div className="workspace-top">
             <section className="code-pane" aria-label="Step별 코드">
               <div className="pane-toolbar"><span>Python</span><span className="pane-meta">{run ? `${run.stages.length - 1} steps` : ""}</span></div>
@@ -330,12 +345,13 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
                 </section>}
                 {steps.map((stage,index) => <article className={`code-step ${stage.isCandidate ? "code-step-candidate" : ""}`} key={stage.viewId} data-selected={stage.viewId === selectedViewId}
                   style={stage.isCandidate ? undefined : { "--step-heading-bg": STEP_HEADER_TONES[((stage.order || index+1)-1)%STEP_HEADER_TONES.length].background, "--step-heading-selected": STEP_HEADER_TONES[((stage.order || index+1)-1)%STEP_HEADER_TONES.length].selected } as CSSProperties}>
-                  <button className="code-step-heading" aria-label={`${stage.viewLabel} 선택`} aria-pressed={stage.viewId === selectedViewId} onClick={() => selectStep(stage.viewId)}>
+                  <button className="code-step-heading" aria-label={`${stage.viewLabel} 선택`} aria-pressed={stage.viewId === selectedViewId}
+                    aria-expanded={condition === "ex" ? stage.viewId === selectedViewId && !explanationHidden : undefined} onClick={() => selectStep(stage.viewId,true)}>
                     <span className="step-heading-number">{stage.viewLabel}{stage.isCandidate && <span className="candidate-badge">수정 후보</span>}</span>
                     {stage.nl_explanation?.title && <span className="step-heading-title">{stage.nl_explanation.title}</span>}
                     <span className="step-line-range">{stage.code_location ? `L${stage.code_location.start}–${stage.code_location.end}` : ""}</span>
                   </button>
-                  <div className="step-code" onClick={() => selectStep(stage.viewId)}><PythonCode code={stage.viewCode ?? sourceSnippet(run?.code, stage.code, stage.code_location)} startLine={stage.code_location?.start ?? 1} plain={condition === "ex"} /></div>
+                  <div className="step-code" onClick={() => selectStep(stage.viewId,true)}><PythonCode code={stage.viewCode ?? sourceSnippet(run?.code, stage.code, stage.code_location)} startLine={stage.code_location?.start ?? 1} plain={condition === "ex"} /></div>
                 </article>)}
                 {condition === "in-situ" && finalStep && <article className="code-output-section" data-selected={viewingOutput}>
                   <button className="output-heading" aria-label="Output 선택" aria-pressed={viewingOutput} onClick={() => selectStep(OUTPUT_VIEW_ID)}><span>Output</span><span className="step-line-range">최종 실행 결과</span></button>
@@ -357,9 +373,9 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
                 {visibleTable && <span className="pane-meta table-shape">{visibleTable.rows.length}행 × {visibleTable.columns.length}열</span>}
               </div>
               {!selectedInput && step?.isCandidate && tableView === "output" && <div className="candidate-comparison-note">{step.viewLabel} · {originalStep ? `Step ${originalStep.order} 수정 전 결과와 비교` : "수정 후보 실행 결과"}</div>}
-              {condition === "in-situ" && !selectedInput && !viewingOutput && tableView === "output" && (!!step?.direct_tables?.length || localFilter) ? <div className="table-result-stack">
+              {!selectedInput && !viewingOutput && tableView === "output" && (!!step?.direct_tables?.length || condition === "in-situ" && localFilter) ? <div className="table-result-stack">
                 <div className="direct-table-result">{tableContent}</div>
-                {localFilter && <section className="step-filter-view" aria-label="Step 내부 행 필터">
+                {condition === "in-situ" && localFilter && <section className="step-filter-view" aria-label="Step 내부 행 필터">
                   <header><strong>행 필터</strong><span>{localFilter.input!.rows.length} → {localFilter.table.rows.length}행</span></header>
                   <WorkspaceTable data={localFilter.table} stage={localFilter} identity={`${observedVersion}:${step?.viewId}:filter:${localFilter.transformations?.[0]?.id}`} />
                 </section>}
@@ -367,9 +383,9 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
               </div> : tableContent}
             </section>
           </div>
-          {condition === "ex" && <>
+          {condition === "ex" && !explanationHidden && <>
             {separator("top", "코드·테이블과 설명 높이 조절")}
-            <ExSituExplanation step={selectedInput ? undefined : step} number={step?.order ?? 0} label={selectedInput?.viewLabel ?? step?.viewLabel} inputView={!!selectedInput} filterStep={localFilter} />
+            <ExSituExplanation step={selectedInput ? undefined : step} number={step?.order ?? 0} label={selectedInput?.viewLabel ?? step?.viewLabel} inputView={!!selectedInput} filterStep={localFilter} comparison={step?.isCandidate ? originalStep?.table : undefined} />
           </>}
         </div>
         {separator("chat", "수정 요청 영역 너비 조절")}
@@ -380,9 +396,14 @@ export function TraceApp({ condition = "ex", managed }: { condition?: "ex" | "in
             {session?.revision_history?.map(entry => <div key={entry.id} className="revision-chat-history" aria-label="수정 기록">
               <div className="chat-request">{entry.request}</div>
               <div className="chat-response revision-review-card">
-                <strong>{entry.label} · {entry.status === "approved" ? "승인됨" : "거부됨"}</strong>
+                <strong>{entry.label} · {entry.status === "approved" ? entry.run_id && !appliedRuns.has(entry.run_id) ? "되돌림" : "승인됨" : "거부됨"}</strong>
                 {entry.assumptions?.map((text,index) => <p key={index}>{text}</p>)}
                 {entry.error && <p>{entry.error}</p>}
+                {entry.status === "approved" && <div className="revision-actions">
+                  <Button size="sm" variant="outline" disabled={!!busy || !!preview || taskChanged || session.status !== "ready" || entry.run_id !== run?.id || run?.parent_run_id !== entry.base_run_id}
+                    title={entry.run_id && !appliedRuns.has(entry.run_id) ? "이미 되돌린 수정입니다." : entry.run_id !== run?.id ? "가장 최근 수정부터 순서대로 되돌릴 수 있습니다." : "이 수정 전의 코드와 실행 결과로 되돌리기"}
+                    onClick={() => undoRevision(entry)}><RotateCcw />Undo</Button>
+                </div>}
               </div>
             </div>)}
             {failures.map((message) => <ChatMessage key={message.id} message={message} />)}

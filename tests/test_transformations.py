@@ -29,6 +29,32 @@ def test_individual_chained_calls_and_multi_column_assignments_have_exact_source
     assert len({i['id'] for i in items})==3
 
 
+def test_display_uses_complete_statements_without_expanding_into_variable_definitions():
+    code="parts = input_df['x'].astype(str)\nresult = input_df.copy()\nresult['City'] = parts.str.strip()"
+    run=snapshot(code)
+    item=next(item for item in run['stages'][1]['transformations'] if item['method']=='strip')
+    assert item['code']=='parts.str.strip()'
+    assert item['statement_code']=="result['City'] = parts.str.strip()"
+    assert item['statement_location']['start']==3
+    assert 'astype' not in item['statement_code']
+    fingerprint=explanations.fingerprint(run)
+    item['description']={'text':'선택한 값의 앞뒤 공백을 제거합니다.','source':'llm'}
+    annotate_run(run)
+    assert explanations.fingerprint(run)==fingerprint
+
+
+def test_display_keeps_multiline_and_loop_local_statement_boundaries():
+    code="result = input_df.assign(\n    first=input_df['x'] * 2,\n    second=input_df['y'] * 3\n)\nfor column in ['first','second']:\n    result[column] = result[column].astype(str)"
+    run=snapshot(code)
+    items=run['stages'][1]['transformations']
+    first=next(item for item in items if item['code'].startswith('first='))
+    assert first['statement_code']==code.split('\nfor column')[0]
+    assert first['statement_location']['start']==1 and first['statement_location']['end']==4
+    conversion=next(item for item in items if item['method']=='astype')
+    assert conversion['statement_code']=="result[column] = result[column].astype(str)"
+    assert 'for column' not in conversion['statement_code']
+
+
 def test_unicode_offsets_multiline_expressions_and_semicolon_statements():
     code="이름 = input_df['x'].astype(str); result = input_df.assign(\n    값=이름.str.strip(),\n    두배=input_df['y'] * 2\n)"
     items=extract(code,[0,1]);lines=code.splitlines(keepends=True)

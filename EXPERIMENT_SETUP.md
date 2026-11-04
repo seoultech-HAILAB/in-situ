@@ -37,13 +37,13 @@
 | `study.*`, `tutorial.*` | 등록·복원·연습 시작/종료·전체 완료 |
 | `task.preparing/started/finished` | 준비, 실제 시작과 deadline, 종료 사유 `participant/timeout`, 종료 시 확정 run·후보 ID |
 | `task.start_prompt/start_confirmed`, `task.finish_prompt/finish_cancelled/finish_confirmed` | 시작 안내·시작 버튼, 종료 확인창 열기·취소·확인 |
-| `instructions.open/close/loaded/failed`, `tutorial.instructions_confirmed` | 안내 창/과제 중 안내 열기·닫기, 페이지 이미지 로드·실패, 튜토리얼 안내 확인. 과제 ID·원본 PDF 해시·페이지 정보를 함께 기록 |
+| `instructions.open/close/loaded/failed`, `tutorial.instructions_confirmed` | 시작 전 안내 창 열기·닫기, 페이지 이미지 로드·실패, 튜토리얼 안내 확인. 과제 ID·원본 PDF 해시·페이지 정보를 함께 기록. 과제 진행 화면 하단의 안내 탭은 제공하지 않음 |
 | `break.started/completed` | 휴식 시작과 종료, 건너뛰기 여부·실제 휴식 시간·남은 시간 |
 | `workspace.ready`, `view.context` | 현재 session/run/코드 버전, Step, 입력·결과 테이블, 후보 관찰 여부, 코드 줄 범위 |
 | `view.step/input/table/output` | 이전·다음 관찰 대상, 입력 표 이름, 최종 결과 선택 |
 | `transformation.open/close` | 클릭한 생성·변환·삭제 종류, 열·행, 실제 연결된 연산 ID/줄 범위, 열린 시간 |
 | `explanation.visible/hidden` | 두 조건에서 개별 연산 설명이 화면에 노출된 시간, 연산 ID·줄 범위·표시 영역. 화면 노출 기록이며 실제 읽기나 이해 여부를 뜻하지 않는다. |
-| `revision.submitted/approve/deny` | 자연어 수정 전문, 대상 Step, 기준 실행, 후보 ID, 승인·거부 요청 |
+| `revision.submitted/approve/deny/undo` | 자연어 수정 전문, 대상 Step, 기준 실행, 후보 ID, 승인·거부·되돌리기 요청 |
 | `workspace.action_*` | 작업 시작/완료/실패, 소요 시간, 오류 메시지 |
 | `ui.click/input/key/focus/blur` | 요소 역할·라벨·클래스, 클릭 좌표, 앱 입력 값, 조작 키, 초점 변화. 입력 전문과 붙여넣은 텍스트는 기록되며 비밀번호 입력은 제외한다. |
 | `ui.pointer/scroll/resize/panel_resize` | 포인터 위치 표본, 영역별 스크롤과 크기, 패널 조절 전후와 입력 방식 |

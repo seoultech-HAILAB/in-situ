@@ -282,3 +282,25 @@ def test_chat_review_prose_survives_both_decisions_and_reload(workspace, conditi
         assert server.participant_view(client.get(url).json())['revision_history'] == expected
         assert client.post(decision + '/' + action).status_code == 409
         assert client.get(url).json()['revision_history'] == expected
+
+
+@pytest.mark.parametrize('condition', ['in-situ', 'ex'])
+def test_chat_undo_restores_exact_saved_results_and_retains_review_prose(workspace, condition, monkeypatch):
+    client,url,_,base,generator,*_=workspace
+    client.post(url+'/condition',json={'condition':condition})
+    generator.assumptions=['x 값에 3을 곱해 y를 계산합니다.']
+    _,decision=propose(workspace)
+    approved=client.post(decision+'/approve').json()
+    history=copy.deepcopy(approved['revision_history'])
+    def unexpected_execution(*args,**kwargs):raise AssertionError('Undo must restore the saved run, never execute code or call the model.')
+    monkeypatch.setattr(server,'execute',unexpected_execution)
+    response=client.post(url+'/undo',json={'base_run_id':approved['run']['id']})
+    assert response.status_code==200,response.text
+    undone=response.json()
+    assert undone['run']['id']==base['id'] and undone['run']['code']==base['code']
+    assert [s['table'] for s in undone['run']['stages']]==[s['table'] for s in base['stages']]
+    assert len(undone['runs'])==2 and undone['revision_history']==history
+    restored=client.get(url).json()
+    assert restored['run']['id']==base['id'] and restored['revision_history']==history
+    assert client.post(url+'/undo',json={'base_run_id':approved['run']['id']}).status_code==409
+    assert client.get(url).json()['run']['id']==base['id']

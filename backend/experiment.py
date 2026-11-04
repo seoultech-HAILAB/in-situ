@@ -51,6 +51,7 @@ LABELS = {
     'explanation.visible': '연산 설명 화면 노출', 'explanation.hidden': '연산 설명 화면 노출 종료',
     'revision.submitted': '자연어 수정 제출', 'revision.approve': '수정 승인 요청',
     'revision.deny': '수정 거부 요청', 'workspace.action_started': '작업 시작',
+    'revision.undo': '확정 수정 되돌리기 요청',
     'workspace.action_completed': '작업 완료', 'workspace.action_failed': '작업 실패',
     'ui.click': '클릭', 'ui.input': '입력 내용 변경', 'ui.key': '조작 키 입력',
     'ui.focus': '요소 초점', 'ui.blur': '요소 초점 해제',

@@ -44,10 +44,10 @@ def install(app):
                   'input','inputs','input_refs','depends_on','comparison_input_kind','changes')
             keys+=('statement_schema_effects','output_bindings','schema_origins')
             if not statement_upgrade:keys=()
-            keys+=('direct_table_calls','direct_table_observations_version','direct_table_observations_limited')
+            keys+=('direct_table_calls','direct_table_reads','direct_table_observations_version','direct_table_observations_limited')
             if failure:
                 if statement_upgrade:run.update(execution_observations_version='unavailable-v7',execution_observations_error=failure)
-                run.update(direct_table_observations_version='unavailable-table-calls-v1',direct_table_observations_error=failure)
+                run.update(direct_table_observations_version='unavailable-table-calls-v2',direct_table_observations_error=failure)
             else:
                 by_id={stage['id']:stage for stage in stages}
                 for stage in run['stages'][1:]:

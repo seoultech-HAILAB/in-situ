@@ -1,7 +1,6 @@
-import type { Stage } from "@/lib/trace";
-import { availableTransformations, transformationDetails } from "./workspace-diff";
+import type { Stage, Table } from "@/lib/trace";
+import { explainedTransformations, transformationDetails } from "./workspace-diff";
 import { TransformationDetails } from "./transformation-details";
-import { DirectUsedTables } from "./direct-used-tables";
 
 type ExplanationItem = NonNullable<Stage["transformations"]>[number];
 type ChangeKind = "added" | "changed" | "removed";
@@ -37,19 +36,21 @@ function changeHeadings(item: ExplanationItem): { names: string[]; kind?: Change
   return [{ names: item.output_columns.length ? item.output_columns : ["열 대응 미확인"] }];
 }
 
-export function ExSituExplanation({ step, number, label, inputView = false, filterStep }: {
-  step?: Stage; number: number; label?: string; inputView?: boolean; filterStep?: Stage;
+export function ExSituExplanation({ step, number, label, inputView = false, filterStep, comparison }: {
+  step?: Stage; number: number; label?: string; inputView?: boolean; filterStep?: Stage; comparison?: Table;
 }) {
-  const allItems = step ? availableTransformations(step) : [];
+  const items = step ? [...explainedTransformations(step,comparison,filterStep)].sort((a,b) => {
+    const left=a.statement_location ?? a.code_location, right=b.statement_location ?? b.code_location;
+    return left.start-right.start || (left.start_column ?? 0)-(right.start_column ?? 0)
+      || a.code_location.start-b.code_location.start || (a.code_location.start_column ?? 0)-(b.code_location.start_column ?? 0);
+  }) : [];
   const filter = filterStep?.transformations?.[0];
-  const items = filter ? [filter, ...allItems.filter(item => item.id !== filter.id)] : allItems;
   return <section className="explanation-pane" aria-label="코드 자연어 설명">
     <div className="pane-toolbar"><span>코드 설명</span>
       {(step || inputView) && <span className="explanation-step-label">{label ?? `Step ${String(number).padStart(2,"0")}`}</span>}
     </div>
     <div className="explanation-scroll" key={`${step?.execution_version}:${step?.id}`}>
       {!step ? inputView ? null : <div className="explanation-empty">과제를 실행하면 선택한 Step의 코드 설명이 여기에 표시됩니다.</div> : <>
-        <DirectUsedTables tables={step.direct_tables ?? []} identity={`${step.execution_version}:${step.id}`} />
         {items.length > 0 ? <ol className="explanation-operations">{items.map(item => <li key={item.id}>
           <h3 className="explanation-change-heading">{changeHeadings(item).map((heading,index) => <span key={index}
             className={`explanation-change-group${heading.kind ? ` change-${heading.kind}` : ""}`} data-change-kind={heading.kind}>
@@ -57,7 +58,7 @@ export function ExSituExplanation({ step, number, label, inputView = false, filt
             {heading.kind && <span className="explanation-change-type">{CHANGE_NAMES[heading.kind]}</span>}
           </span>)}{item.id === filter?.id && <span className="step-filter-count">{filterStep!.input!.rows.length} → {filterStep!.table.rows.length}행</span>}</h3>
           <TransformationDetails item={transformationDetails(item)} plainCode />
-        </li>)}</ol> : <p className="explanation-empty">{step.nl_explanation?.text ?? "설명이 없습니다."}</p>}
+        </li>)}</ol> : <p className="explanation-empty">연결된 변환 설명이 없습니다.</p>}
       </>}
     </div>
   </section>;

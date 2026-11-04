@@ -20,9 +20,6 @@
 .study-break-clock { font-size: 64px; font-variant-numeric: tabular-nums; }
 .study-error { padding: 12px 20px; background: #fff1ef; color: #962f28; }
 .study-error button { margin-left: 18px; text-decoration: underline; cursor: pointer; }
-.study-task-instructions { flex-shrink: 0; background: white; border-top: 1px solid #dce2e8; font-size: 13px; }
-.study-task-instructions summary { padding: 9px 18px; cursor: pointer; }
-.study-task-instructions > div { padding: 4px 22px 18px; max-height: 27vh; overflow-y: auto; white-space: pre-line; line-height: 1.7; }
 .study-dialog { position: fixed; inset: 0; margin: auto; width: min(420px, calc(100vw - 40px)); padding: 26px; border: 1px solid #dce2e8; border-radius: 12px; background: white; color: #26384d; box-shadow: 0 16px 60px #17294233; }
 .study-dialog::backdrop { background: #13223855; }
 .study-dialog h2 { font-size: 19px; font-weight: 650; margin-bottom: 14px; }
@@ -38,7 +35,6 @@
 .study-guide-footer > p { flex: 1; font-size: 12px; color: #526174; margin: 0; }
 .study-guide-footer > button { flex-shrink: 0; }
 .study-guide-error { padding: 18px; color: #962f28; }
-.study-task-instructions > div:has(.participant-task-guide) { white-space: normal; background: #edf0f4; }
 @media (max-width: 600px) { .study-guide-footer { gap: 12px; padding: 12px; } .study-guide-scroll { padding: 8px; } .study-guide-dialog > h2 { padding: 12px; } }
 
 @theme inline {
@@ -162,6 +158,7 @@
 .workspace-main { display: grid; grid-template-columns: minmax(0, 1fr) 5px minmax(0, var(--chat-size)); flex: 1; min-height: 0; }
 .workspace-left { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, var(--top-size)) 5px minmax(0, 1fr); }
 .workspace-in-situ .workspace-left { grid-template-rows: minmax(0, 1fr); }
+.workspace-left.explanation-collapsed { grid-template-rows: minmax(0, 1fr); }
 .workspace-top { min-height: 0; display: grid; grid-template-columns: minmax(0, var(--code-size)) 5px minmax(0, 1fr); }
 .code-pane, .table-pane, .chat-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .pane-toolbar { height: 39px; min-height: 39px; display: flex; align-items: center; gap: 5px; padding: 0 12px; border-bottom: 1px solid #e8eaed; color: #525964; font-size: 12px; }

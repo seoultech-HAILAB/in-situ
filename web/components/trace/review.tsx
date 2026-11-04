@@ -137,7 +137,7 @@ export function Review(props: {
   const header = (
     <header className="sticky top-0 z-30 border-b bg-card/95 backdrop-blur">
       <div className="mx-auto flex h-14 max-w-[1600px] items-center gap-4 px-6">
-        <span className="font-semibold tracking-tight">TRACE</span>
+        <span className="font-semibold tracking-tight">situ</span>
         <span className="h-5 w-px bg-border" aria-hidden />
         <span className="min-w-0 truncate text-sm text-muted-foreground">{session.task_display?.title}</span>
         <div className="ml-auto flex items-center gap-2">

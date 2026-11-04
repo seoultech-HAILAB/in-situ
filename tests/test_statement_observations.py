@@ -166,13 +166,15 @@ def test_saved_run_gets_observations_without_replacing_execution_code_or_tables(
     assert any(item['removed_columns']==['y'] for item in run['stages'][1]['transformations'])
 
 
-def test_direct_table_upgrade_preserves_existing_explanations_and_run_history(tmp_path,monkeypatch):
+@pytest.mark.parametrize('source_only',[False,True])
+def test_direct_table_upgrade_preserves_existing_explanations_and_run_history(tmp_path,monkeypatch,source_only):
     from backend import explanations
     monkeypatch.setattr(server,'STORE',tmp_path)
     session=server.create(server.Tables(input_csv='key\na\nb',target_csv='key,rate\na,2\nb,3',sources={'rates':'key,rate\na,2\nb,3'},execution_engine='python',condition='in-situ'))
     session.pop('run',None)
     code="result = input_df.copy()\nfor column in ['rate']:\n    lookup = tables['rates'].copy()\n    result = result.merge(lookup, on='key', how='left')"
-    server.execute(session,code,[],'research',groups=[{'statement_indices':[0,1],'output_variable':'result'}])
+    if source_only:code="result = tables['rates'].set_index('key').T"
+    server.execute(session,code,[],'research',groups=[{'statement_indices':[0] if source_only else [0,1],'output_variable':'result'}])
     current=server.current(session)
     current.update(explanation_status='ready',explanation_meta={'prompt_version':explanations.PROMPT_VERSION,'model':'preserved-test'})
     current['stages'][1]['nl_explanation']={'text':'기존 설명을 유지합니다.','title':'기존 제목','source':'llm'}
@@ -183,7 +185,9 @@ def test_direct_table_upgrade_preserves_existing_explanations_and_run_history(tm
                 else:remove_calls(value[key])
         elif isinstance(value,list):
             for item in value:remove_calls(item)
-    remove_calls(session);server.save(session)
+    remove_calls(session)
+    current['direct_table_observations_version']='native-table-calls-v1'
+    server.save(session)
     baseline=deepcopy(current);fingerprint=explanations.fingerprint(current)
     client=TestClient(server.app)
     response=client.post(f"/api/sessions/{session['id']}/execution-observations",json={'run_id':current['id']})
@@ -194,8 +198,11 @@ def test_direct_table_upgrade_preserves_existing_explanations_and_run_history(tm
     assert upgraded['explanation_status']=='ready' and upgraded['explanation_meta']==baseline['explanation_meta']
     assert upgraded['stages'][1]['nl_explanation']==baseline['stages'][1]['nl_explanation']
     assert explanations.fingerprint(upgraded)==fingerprint
-    assert upgraded['direct_table_observations_version']=='native-table-calls-v1'
+    assert upgraded['direct_table_observations_version']=='native-table-calls-v2'
     assert len(upgraded['stages'][1]['direct_tables'])==1
+    if source_only:
+        assert upgraded['stages'][1]['direct_tables'][0]['name']=='rates'
+        assert upgraded['stages'][1]['direct_table_reads']
 
 
 def test_changed_or_failed_reobservation_preserves_saved_run(stored,monkeypatch):

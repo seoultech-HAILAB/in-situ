@@ -21,6 +21,7 @@ from .runtime import Frame, Interpreter, Unsupported, clean, digest, run as trac
 from .python_provenance import ProvenanceInterpreter
 from .statement_observations import Observations, SchemaObservations, snapshot as observation_snapshot, VERSION as OBSERVATIONS_VERSION
 from .table_call_observations import TableCallObservations, VERSION as TABLE_CALLS_VERSION
+from .table_read_observations import TableReadObservations
 
 MODULES=('pandas','numpy','math','re','datetime','statistics','collections','itertools','functools')
 # datetime's native strftime/strptime call __import__ for these trusted helpers.
@@ -147,6 +148,7 @@ def run(code,frame,sources,plan):
         executed_statements=[]
         schemas=SchemaObservations(list(zip(indices,nodes)))
         table_calls=TableCallObservations(code,spec['id'])
+        table_reads=TableReadObservations(code,spec['id'])
         observation_bytes=0;complete_observations=True
         try:
             output=io.StringIO()
@@ -161,12 +163,17 @@ def run(code,frame,sources,plan):
                     executed_lines=set()
                     old_trace=sys.gettrace()
                     def record_line(frame,event,arg):
+                        try:table_reads.observe(frame,event,statement_index)
+                        except Exception:table_reads.limited=True
                         try:table_calls.observe(frame,event,arg,statement_index)
                         except Exception:table_calls.limited=True
                         if frame.f_code.co_filename=='<trace-program>':
                             if event=='line':executed_lines.add(frame.f_lineno)
                             try:schemas.trace(frame,event)
                             except Exception:pass
+                            # Set this after observer helpers: CPython may
+                            # update opcode instrumentation during their calls.
+                            frame.f_trace_opcodes=True
                         return record_line
                     try:
                         sys.settrace(record_line)
@@ -253,8 +260,9 @@ def run(code,frame,sources,plan):
             last['stdout']=output.getvalue()[:10000]
             last['executed_statements']=executed_statements
             last['direct_table_calls']=table_calls.records
+            last['direct_table_reads']=table_reads.records
             last['direct_table_observations_version']=TABLE_CALLS_VERSION
-            if table_calls.limited:last['direct_table_observations_limited']=True
+            if table_calls.limited or table_reads.limited:last['direct_table_observations_limited']=True
             last['statement_schema_effects']=list(schemas.records.values())
             last['schema_origins']=schemas.for_frame(actual)
             last['output_bindings']=[key for key,value in after.items() if value is actual]

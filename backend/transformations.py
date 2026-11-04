@@ -371,6 +371,19 @@ def annotate_run(run):
         run['execution_observations_version']=OBSERVATIONS_VERSION
     from .observed_changes import restore
     restore(run)
+    # Display the complete containing statement in both conditions, while
+    # preserving the operation's original coordinates for attribution/editing.
+    statements=[node for node in ast.walk(tree) if isinstance(node,(ast.Assign,ast.AnnAssign,ast.AugAssign,ast.Expr,ast.Delete,ast.Return))]
+    for stage in run.get('stages',[])[1:]:
+        for item in stage.get('transformations',[]):
+            loc=item.get('code_location') or {}
+            start=(loc.get('start',0),loc.get('start_column',0))
+            end=(loc.get('end',0),loc.get('end_column',10**9))
+            matches=[node for node in statements if (node.lineno,node.col_offset)<=start and (node.end_lineno,node.end_col_offset)>=end]
+            statement=min(matches,key=lambda node:(node.end_lineno-node.lineno,node.end_col_offset-node.col_offset),default=None)
+            if statement is not None:
+                item['statement_code']=ast.get_source_segment(code,statement)
+                item['statement_location']={'start':statement.lineno,'end':statement.end_lineno,'start_column':statement.col_offset,'end_column':statement.end_col_offset}
     from .direct_tables import annotate as annotate_direct_tables
     annotate_direct_tables(run)
     return run

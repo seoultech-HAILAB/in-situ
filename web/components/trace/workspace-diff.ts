@@ -147,27 +147,47 @@ export function availableTransformations(stage: Stage) {
   // Keep unresolved AST operations available. For the same actual statement,
   // both conditions display the shared observed-change explanation once.
   const linked = items.filter(item => item.method === "observed_change");
-  return [...linked, ...items.filter(item => item.method !== "observed_change" && !linked.some(other =>
+  const selected = [...linked, ...items.filter(item => item.method !== "observed_change" && !linked.some(other =>
     other.code === item.code || other.code_location.start === item.code_location.start && other.output_columns.some(c => item.output_columns.includes(c))
   ))];
+  const assignments = selected.filter(item => item.method === "assignment");
+  return selected.filter(item => item.method === "assignment" || !assignments.some(assignment =>
+    assignment.statement_index === item.statement_index && ['derive','convert'].includes(item.kind) && assignment.output_columns.some(column => item.output_columns.includes(column))
+  ));
 }
 
 export function transformationDetails(item: NonNullable<Stage["transformations"]>[number]): Transformation {
-  return { id: item.id, code: item.code, text: item.description.text, source: item.description.source,
-    focus: item.focus_code, line: item.code_location, outputColumns: item.output_columns, mapping: item.mapping_status };
+  return { id: item.id, code: item.statement_code ?? item.code, text: item.description.text, source: item.description.source,
+    focus: item.focus_code, line: item.statement_location ?? item.code_location, outputColumns: item.output_columns, mapping: item.mapping_status };
+}
+
+/** Exactly the targets rendered as clickable highlights by WorkspaceTable. */
+export function highlightTargets(stage: Stage, comparison?: Table): ChangeTarget[] {
+  const diff=workspaceDiff(stage,comparison), revision=!!comparison;
+  return [
+    ...diff.columns.filter(column=>column.kind).map(column=>({kind:column.kind!,column:column.name,revision})),
+    ...diff.rows.flatMap(row=>[
+      ...(row.kind?[{kind:row.kind,row,revision}]:[]),
+      ...diff.columns.filter(column=>row.cells[column.name].kind).map(column=>({kind:row.cells[column.name].kind!,row,column:column.name,cell:row.cells[column.name],revision})),
+    ]),
+  ];
+}
+
+/** The same reachable explanation inventory, independent of presentation. */
+export function explainedTransformations(stage: Stage, comparison?: Table, filterStep?: Stage): NonNullable<Stage["transformations"]> {
+  const targets=highlightTargets(stage,comparison);
+  const filterItems=filterStep ? explainedTransformations(filterStep) : [];
+  const filterIds=new Set(filterItems.map(item=>item.id));
+  return [...filterItems,...availableTransformations(stage).filter(item=>!filterIds.has(item.id)&&targets.some(target=>
+    (target.revision?item.revision_effects:item.execution_effects)?.some(effect=>matchesEffects(effect,target))
+  ))];
 }
 
 export function transformations(stage: Stage, target: ChangeTarget): Transformation[] {
   if (stage.transformations) {
-    let matched = (stage.transformations || []).filter(item => item.contributes_to_output !== false && (!item.execution_version || item.execution_version === stage.execution_version) && (!item.code_version || item.code_version === stage.code_version)).filter(item =>
+    return availableTransformations(stage).filter(item =>
       (target.revision ? item.revision_effects : item.execution_effects)?.some(effect => matchesEffects(effect,target))
-    );
-    const linked = matched.filter(item => item.method === "observed_change");
-    if (linked.length) matched = linked;
-    const assignments=matched.filter(item=>item.method==='assignment');
-    return matched.filter(item=>item.method==='assignment' || !assignments.some(assignment=>
-      assignment.statement_index===item.statement_index && ['derive','convert'].includes(item.kind) && assignment.output_columns.some(column=>item.output_columns.includes(column))
-    )).map(item => ({...transformationDetails(item),candidates:(target.revision ? item.revision_effects : item.execution_effects)?.some(effect=>matchesEffects(effect,target)&&['step-search-candidate','llm-step-candidate'].includes(effect.attribution || ''))}));
+    ).map(item => ({...transformationDetails(item),candidates:(target.revision ? item.revision_effects : item.execution_effects)?.some(effect=>matchesEffects(effect,target)&&['step-search-candidate','llm-step-candidate'].includes(effect.attribution || ''))}));
   }
   // Legacy records can still match an actual operation, but never the whole Step.
   if (target.revision) return [];

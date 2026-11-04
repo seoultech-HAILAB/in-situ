@@ -46,7 +46,7 @@ if (ROOT / '.env').exists():
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 STORE = Path(os.getenv('TRACE_DATA_DIR', str(ROOT / '.local' / 'sessions'))).resolve()
 STORE.mkdir(parents=True, exist_ok=True)
-app = FastAPI(title='Trace table research', version='0.1.0')
+app = FastAPI(title='situ', version='0.1.0')
 generator = OpenAIGenerator()
 locks = {}
 locks_guard = threading.Lock()
@@ -501,12 +501,18 @@ def condition(sid: str, body: Condition):
         return view(s)
 
 
+class UndoRequest(BaseModel):
+    base_run_id: str | None = None
+
+
 @app.post('/api/sessions/{sid}/undo')
-def undo(sid: str):
+def undo(sid: str, body: UndoRequest | None = None):
     with lock(sid):
         s = read(sid)
         if s.get('pending_revision'):raise HTTPException(409,'대기 중인 수정 후보를 먼저 승인하거나 거부하세요.')
         r = current(s)
+        if body and body.base_run_id and (not r or body.base_run_id!=r['id']):
+            raise HTTPException(409, '실행 버전이 바뀌었습니다. 최신 수정 기록을 다시 불러오세요.')
         if s['status'] == 'failed' and r:
             s.update(status='ready', error=None, confirmed=None)
         elif r and r.get('parent_run_id'):

@@ -64,7 +64,7 @@ export async function api<T>(path: string, body?: unknown, options = { explain: 
   const isSession =
     data?.run && Array.isArray(data.runs) && ["ex", "in-situ"].includes(data.condition);
   const needsObservations = isSession && (!["native-statements-v7", "unavailable-v7"].includes(data.run.execution_observations_version)
-    || data.run.pipeline?.engine === "python" && !["native-table-calls-v1", "unavailable-table-calls-v1"].includes(data.run.direct_table_observations_version));
+    || data.run.pipeline?.engine === "python" && !["native-table-calls-v2", "unavailable-table-calls-v2"].includes(data.run.direct_table_observations_version));
   if (options.explain && needsObservations && !path.endsWith("/execution-observations")) {
     try {
       const observed = await fetch(`/api/sessions/${data.id}/execution-observations`, {

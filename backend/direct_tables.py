@@ -8,7 +8,7 @@ import ast
 import hashlib
 import json
 
-from .table_call_observations import contributing_calls, VERSION as TABLE_CALLS_VERSION
+from .table_call_observations import contributing_calls, contributing_expressions, call_key, VERSION as TABLE_CALLS_VERSION
 
 
 def expression(run,op):
@@ -55,6 +55,17 @@ def description(op,node):
 
 def collect(run,stage):
     result=[];seen=set()
+    def add(name,displayed,usage):
+        # Ignore tracing-only row IDs when deduplicating plain table cards.
+        signature=json.dumps([name,displayed['columns'],[row['values'] for row in displayed['rows']],
+                              {c:displayed['stats']['fields'][c]['dtype'] for c in displayed['columns']}],ensure_ascii=False,sort_keys=True)
+        identity=hashlib.sha256(signature.encode()).hexdigest()[:16]
+        if identity in seen:
+            existing=next(entry for entry in result if entry['id']==identity)
+            if usage not in existing['uses']:existing['uses'].append(usage)
+            return
+        seen.add(identity)
+        result.append({'id':identity,'name':name,'table':displayed,'uses':[usage]})
     operations=stage.get('operations',[])
     by_id={op['id']:op for op in operations}
     live=set();pending=[stage.get('output_ref')]
@@ -77,7 +88,10 @@ def collect(run,stage):
     indices=spec['statement_indices'] if spec else [i for i,node in enumerate(tree.body) if (stage.get('code_location') or {}).get('start',0)<=node.lineno<=(stage.get('code_location') or {}).get('end',0)]
     output=stage.get('output_variable') or (spec or {}).get('observed_output_variable') or (spec or {}).get('output_variable')
     executed={line for op in stage.get('executed_statements',[]) for line in op.get('executed_lines',[])}
-    calls=contributing_calls([tree.body[i] for i in indices],output,executed or None)
+    nodes=[tree.body[i] for i in indices]
+    calls=contributing_calls(nodes,output,executed or None)
+    read_sites=contributing_expressions(nodes,output,executed or None,(ast.Subscript,))
+    covered_reads=set()
     def site(op):
         loc=op.get('expression_location') or op.get('code_location') or {}
         return (loc.get('start'),loc.get('end'),loc.get('start_column'),loc.get('end_column'))
@@ -116,18 +130,35 @@ def collect(run,stage):
                     elif isinstance(node.args[0],ast.Name):
                         name=f"{node.args[0].id}[{item['operand_key']!r}]" if 'operand_key' in item else node.args[0].id
             name=label(operand,name)
-            displayed=item['table']
-            # Row IDs are tracing internals, not a distinct plain-table view.
-            signature=json.dumps([name,displayed['columns'],[row['values'] for row in displayed['rows']],
-                                  {c:displayed['stats']['fields'][c]['dtype'] for c in displayed['columns']}],ensure_ascii=False,sort_keys=True)
-            identity=hashlib.sha256(signature.encode()).hexdigest()[:16]
+            # A cleaned merge/concat operand already represents the source
+            # read which produced it in this Step; do not duplicate its raw CSV.
+            binding=operand.id if isinstance(operand,ast.Name) else node.args[0].id if op['kind']=='concat' and isinstance(node,ast.Call) and node.args and isinstance(node.args[0],ast.Name) else name
+            covered_reads.update(contributing_expressions(nodes,binding,executed or None,(ast.Subscript,)))
+            if operand is not None:covered_reads.update(call_key(n) for n in ast.walk(operand) if isinstance(n,ast.Subscript))
             usage={'text':description(op,node),'line':(op.get('expression_location') or op.get('code_location') or {}).get('start')}
-            if identity in seen:
-                existing=next(entry for entry in result if entry['id']==identity)
-                if usage not in existing['uses']:existing['uses'].append(usage)
-                continue
-            seen.add(identity)
-            result.append({'id':identity,'name':name,'table':item['table'],'uses':[usage]})
+            add(name,item['table'],usage)
+    # A source table may be the only frame used to construct this Step's
+    # result (e.g. transpose a staff CSV). It still needs an input card.
+    # Reads nested in combination calls are represented by their actual call
+    # operands above, including the exclusion of failed/unused calls.
+    combination_reads={call_key(part) for node in nodes for call in ast.walk(node)
+        if isinstance(call,ast.Call) and (isinstance(call.func,ast.Attribute) and call.func.attr in ('merge','join','concat')
+            or isinstance(call.func,ast.Name) and call.func.id in ('merge','concat'))
+        for part in ast.walk(call) if isinstance(part,ast.Subscript)}
+    for read in stage.get('direct_table_reads',[]):
+        loc=read.get('code_location') or {}
+        key=(loc.get('start'),loc.get('end'),loc.get('start_column'),loc.get('end_column'))
+        if key not in read_sites or key in covered_reads or key in combination_reads:continue
+        node=next((n for n in ast.walk(tree) if isinstance(n,ast.Subscript) and call_key(n)==key),None)
+        if node is None or ast.get_source_segment(run['code'],node)!=read.get('code'):continue
+        parents={child:parent for root in nodes for parent in ast.walk(root) for child in ast.iter_child_nodes(parent)}
+        path=[];parent=node
+        while parent in parents:
+            parent=parents[parent];path.append(parent)
+            if isinstance(parent,ast.stmt):break
+        transpose=any(isinstance(n,ast.Attribute) and n.attr=='T' or isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='transpose' for n in path)
+        text='이 표의 행과 열을 바꿔 현재 Step의 입력으로 사용합니다.' if transpose else '이 표를 직접 읽어 현재 Step의 결과를 만듭니다.'
+        add(read['name'],read['table'],{'text':text,'line':loc.get('start')})
     return result
 
 

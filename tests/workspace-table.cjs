@@ -25,7 +25,7 @@ const { TraceApp } = load('web/components/trace/trace-app');
 const { ExSituExplanation } = load('web/components/trace/ex-situ-explanation');
 const { TransformationDetails } = load('web/components/trace/transformation-details');
 const { workspaceSteps } = load('web/components/trace/revision-workspace');
-const { transformations } = load('web/components/trace/workspace-diff');
+const { transformations, explainedTransformations, highlightTargets } = load('web/components/trace/workspace-diff');
 const { DirectUsedTables } = load('web/components/trace/direct-used-tables');
 const table = (columns, rows) => ({ columns, rows: rows.map(([id, values]) => ({id,values})), stats: {fields: Object.fromEntries(columns.map(c=>[c,{dtype:'number'}]))} });
 const before = table(['x','old'], [['a',{x:1,old:10}],['b',{x:2,old:20}]]);
@@ -41,7 +41,7 @@ test('direct input cards show the actual table and use summary without transform
   assert.ok(!html.includes('data-change=') && !html.includes('변환 설명 보기'));
   assert.equal(renderToStaticMarkup(React.createElement(DirectUsedTables,{tables:[],identity:'run:step4'})),'');
   const ex=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:{...stage,direct_tables:tables},number:3}));
-  assert.ok(ex.includes('direct-used-tables') && ex.includes('>USD<'));
+  assert.ok(!ex.includes('direct-used-tables') && !ex.includes('>USD<'));
 });
 
 test('in-situ renders the three changes as keyboard-operable table targets and retains deleted values', () => {
@@ -104,8 +104,8 @@ test('only Ex-situ has the lower explanation panel and height separator; In-situ
 });
 
 test('Ex-situ describes the selected code with matching line references and excludes stale execution metadata', () => {
-  const selected={id:'step-2',execution_version:'run-2',code_version:2,nl_explanation:{title:'도시 정리',text:'입지에서 도시를 추출합니다.'},transformations:[
-    {id:'current',execution_version:'run-2',code_version:2,code:"parts[0].str.strip()",code_location:{start:11,end:11},output_columns:['City'],description:{text:'원본 Location을 분할해 첫 부분의 공백을 제거합니다.',source:'llm'}},
+  const selected={...stage,input:table(['City'],[['a',{City:' old '}]]),table:table(['City'],[['a',{City:'old'}]]),id:'step-2',execution_version:'run-2',code_version:2,nl_explanation:{title:'도시 정리',text:'입지에서 도시를 추출합니다.'},transformations:[
+    {id:'current',execution_version:'run-2',code_version:2,code:"parts[0].str.strip()",code_location:{start:11,end:11},output_columns:['City'],description:{text:'원본 Location을 분할해 첫 부분의 공백을 제거합니다.',source:'llm'},execution_effects:[{columns:{added:[],changed:['City'],removed:[]},rows:{added:[],changed:[],removed:[]},cells:{added:{},changed:{},removed:{}}}]},
     {id:'old',execution_version:'run-1',code_version:1,code_location:{start:4,end:4},output_columns:['Old'],description:{text:'오래된 설명',source:'llm'}},
   ]};
   const html=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2,onRefresh(){}}));
@@ -119,7 +119,7 @@ test('Ex-situ describes the selected code with matching line references and excl
 test('Ex-situ headings identify actual added, changed and removed columns without coloring prose or code', () => {
   const effect=(columns={},rows={},cells={})=>({columns:{added:[],changed:[],removed:[],...columns},rows:{added:[],changed:[],removed:[],reordered:[],...rows},cells:{added:{},changed:{},removed:{},...cells}});
   const item=(id,output,effects)=>({id,kind:'derive',method:'assignment',code:`result['${id}'] = value`,code_location:{start:11,end:11},output_columns:output,input_columns:['Location'],description:{text:'현재 값을 처리합니다.',source:'llm'},execution_effects:effects});
-  const selected={...stage,transformations:[
+  const selected={...stage,input:table(['Location','Cost'],[['a',{Location:'old',Cost:10}],['b',{Location:'removed',Cost:20}]]),table:table(['City','Cost'],[['a',{City:'new',Cost:null}]]),transformations:[
     item('created',['City'],[effect({added:['City']},{},{added:{City:['a']}})]),
     item('converted',['Cost'],[effect({changed:['Cost']},{},{changed:{Cost:['a']}})]),
     item('selected',['City','Cost'],[effect({removed:['Location']},{},{removed:{Location:['a']}})]),
@@ -129,20 +129,21 @@ test('Ex-situ headings identify actual added, changed and removed columns withou
   ]};
   const html=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2}));
   const headings=[...html.matchAll(/<h3 class="explanation-change-heading">([\s\S]*?)<\/h3>/g)].map(match=>match[1]);
-  assert.equal(headings.length,6);
+  assert.equal(headings.length,5);
   assert.ok(headings[0].includes('data-change-kind="added"')&&headings[0].includes('City')&&!headings[0].includes('Location'));
   assert.ok(headings[1].includes('data-change-kind="changed"')&&headings[1].includes('Cost'));
   assert.ok(headings[2].includes('data-change-kind="removed"')&&headings[2].includes('Location')&&!headings[2].includes('City'));
   assert.ok(headings[3].includes('data-change-kind="removed"')&&headings[3].includes('>행<')&&!headings[3].includes('Cost'));
   assert.ok(headings[4].includes('data-change-kind="changed"')&&!headings[4].includes('data-change-kind="removed"'));
-  assert.ok(headings[5].includes('Unknown')&&!headings[5].includes('data-change-kind'));
+  assert.ok(!html.includes('Unknown'));
   assert.ok(!html.includes('py-')&&!html.includes('<mark'));
 });
 
 test('Ex-situ candidate headings use the confirmed-to-candidate difference rather than pipeline-input additions', () => {
   const effect=kind=>({columns:{added:[],changed:[],removed:[],[kind]:['City']},rows:{added:[],changed:[],removed:[],reordered:[]},cells:{added:{},changed:{},removed:{}}});
-  const selected={...stage,transformations:[{id:'city',code:'result = build_city()',code_location:{start:11,end:11},output_columns:['City'],description:{text:'도시를 처리합니다.',source:'llm'},execution_effects:[effect('added')],revision_effects:[effect('changed')]}]};
-  const html=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2,label:'Step 2a'}));
+  const original=table(['City'],[['a',{City:'old'}]]);
+  const selected={...stage,table:table(['City'],[['a',{City:'new'}]]),transformations:[{id:'city',code:'result = build_city()',code_location:{start:11,end:11},output_columns:['City'],description:{text:'도시를 처리합니다.',source:'llm'},execution_effects:[effect('added')],revision_effects:[effect('changed')]}]};
+  const html=renderToStaticMarkup(React.createElement(ExSituExplanation,{step:selected,number:2,label:'Step 2a',comparison:original}));
   assert.ok(html.includes('data-change-kind="changed"')&&!html.includes('data-change-kind="added"'));
 });
 
@@ -160,7 +161,9 @@ test('only the revised Step receives a candidate immediately after its baseline,
 
 test('Ex-situ and the In-situ selected transformation render the same local prose and code without definitions', () => {
   const item={id:'t',code:"parts[0].str.strip()",code_location:{start:11,end:11,start_column:12},output_columns:['City'],input_columns:[],description:{source:'llm',text:'원본 Location에서 도시를 추출하고 공백을 제거합니다.'},source_context:{complete:true,unresolved:[],definitions:[{symbol:'parts',code:"parts = input_df['Location'].str.split(',')",code_location:{start:8,end:8}}]}};
-  const selected={...stage,id:'s2',transformations:[item],execution_version:'candidate',code_version:2};
+  item.statement_code="stores['City'] = parts[0].str.strip()";
+  item.statement_location={start:11,end:11,start_column:0,end_column:item.statement_code.length};
+  const selected={...stage,input:table(['City'],[['a',{City:' old '}]]),table:table(['City'],[['a',{City:'old'}]]),id:'s2',transformations:[item],execution_version:'candidate',code_version:2};
   item.execution_effects=[{columns:{added:[],changed:['City'],removed:[]},rows:{added:[],changed:[],removed:[]},cells:{added:{},changed:{},removed:{}}}];
   const inItem=transformations(selected,{kind:'changed',column:'City'})[0];
   const shared=renderToStaticMarkup(React.createElement(TransformationDetails,{item:inItem}));
@@ -172,6 +175,8 @@ test('Ex-situ and the In-situ selected transformation render the same local pros
   assert.ok(!shared.includes('transformation-code-label')&&!shared.includes('transformation-source'));
   assert.ok(!shared.includes('source-definitions')&&!shared.includes('split'));
   assert.ok(ex.includes('Step 2a')&&!ex.includes('수정 내용')&&!ex.includes('도시를 정리해줘'));
+  assert.equal(inItem.code,item.statement_code);
+  assert.deepEqual(explainedTransformations(selected).map(item=>item.id),[...new Set(highlightTargets(selected).flatMap(target=>transformations(selected,target).map(item=>item.id)))]);
 });
 
 test('candidate table changes compare confirmed output to candidate output instead of candidate input', () => {

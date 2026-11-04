@@ -11,14 +11,14 @@ import pandas as pd
 from .runtime import table, clean
 from .statement_observations import location
 
-VERSION = 'native-table-calls-v1'
+VERSION = 'native-table-calls-v2'
 
 
 def call_key(node):
     return (node.lineno, node.end_lineno, node.col_offset, node.end_col_offset)
 
 
-def contributing_calls(nodes, output, executed=None):
+def contributing_expressions(nodes, output, executed=None, kinds=(ast.Call,)):
     """Local backward slice down to assignments inside a loop/branch."""
     selected = set()
 
@@ -26,7 +26,7 @@ def contributing_calls(nodes, output, executed=None):
         return {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
 
     def use(node):
-        selected.update(call_key(n) for n in ast.walk(node) if isinstance(n, ast.Call))
+        selected.update(call_key(n) for n in ast.walk(node) if isinstance(n, kinds))
         return names(node)
 
     def block(statements, live):
@@ -77,6 +77,10 @@ def contributing_calls(nodes, output, executed=None):
 
     block(nodes, {output} if output else set())
     return selected
+
+
+def contributing_calls(nodes, output, executed=None):
+    return contributing_expressions(nodes, output, executed)
 
 
 class TableCallObservations:
