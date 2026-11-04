@@ -17,7 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="ko" className={`${pretendard.variable} antialiased`}>
       <body className="min-h-dvh">
-        <TooltipProvider>{children}</TooltipProvider>
+        <TooltipProvider delay={400}>{children}</TooltipProvider>
         <Toaster theme="light" position="bottom-center" />
       </body>
     </html>

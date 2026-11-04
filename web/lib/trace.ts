@@ -63,7 +63,7 @@ export async function api<T>(path: string, body?: unknown, options = { explain: 
       const described = await fetch(`/api/sessions/${data.id}/explanations`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ run_id: data.run.id, refresh_transformations: path.endsWith("/generate") }),
+        body: JSON.stringify({ run_id: data.run.id, refresh_transformations: path.endsWith("/generate") || path.endsWith("/preview/apply") }),
       });
       if (described.ok) data = await described.json();
       else if (described.status === 409) {

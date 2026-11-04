@@ -8,13 +8,14 @@ import { CHANGE_LABEL, TransformationBubble } from "./transformation-bubble";
 const cellValue = (value: Parameters<typeof fmt>[0]) => value === undefined ? <span className="absent-value">—</span> : value === null ? <span className="null-value">null</span> : typeof value === "boolean" ? String(value) : fmt(value);
 
 /** Deleted values are visible annotations; the executed result stays unchanged. */
-export function WorkspaceTable({ data, identity, stage, onRefresh, refreshing, onTransformationSelect }: { data: Table; identity: string; stage?: Stage; onRefresh?: () => void; refreshing?: boolean; onTransformationSelect?: (item: Transformation) => void }) {
+export function WorkspaceTable({ data, identity, stage, onRefresh, refreshing, onTransformationSelect, explain = true }: { data: Table; identity: string; stage?: Stage; onRefresh?: () => void; refreshing?: boolean; onTransformationSelect?: (item: Transformation) => void; explain?: boolean }) {
   const viewport = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<{ anchor: HTMLElement; target: ChangeTarget; key: string } | null>(null);
   const diff = useMemo(() => stage ? workspaceDiff(stage) : null, [stage]);
   const dismiss = useCallback(() => setPicked(null), []);
   useEffect(() => { viewport.current?.scrollTo({ top: 0, left: 0 }); setPicked(null); }, [identity]);
   function trigger(target: ChangeTarget, key: string, label: string, children: ReactNode) {
+    if (!explain) return <span className="change-trigger change-static">{children}</span>;
     return <button type="button" className="change-trigger" aria-label={`${label} · ${CHANGE_LABEL[target.kind]} · 변환 설명 보기`}
       aria-haspopup="dialog" aria-expanded={picked?.key === key} data-active={picked?.key === key}
       onClick={event => { const anchor = event.currentTarget; setPicked(current => current?.key === key ? null : { anchor, target, key }); }}>{children}</button>;
@@ -22,7 +23,7 @@ export function WorkspaceTable({ data, identity, stage, onRefresh, refreshing, o
   return <>
     {diff && <div className="table-change-legend" aria-label="테이블 변경 표시">
       <span><i className="change-added" />추가</span><span><i className="change-changed" />변경</span><span><i className="change-removed" />삭제</span>
-      <span className="legend-hint">색이 있는 영역을 눌러 변환 보기</span>
+      {explain && <span className="legend-hint">색이 있는 영역을 눌러 변환 보기</span>}
     </div>}
     <div className="workspace-table-scroll" ref={viewport} tabIndex={0} role="region" aria-label="테이블 스크롤">
       <table className={`workspace-table ${diff ? "in-situ-table" : ""}`}>

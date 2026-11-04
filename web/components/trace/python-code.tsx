@@ -7,7 +7,7 @@ const keywords = new Set('and as assert async await break case class continue de
 const constants = new Set(['True','False','None','NotImplemented','Ellipsis']);
 const builtins = new Set('abs all any bool bytes callable chr dict enumerate filter float format frozenset getattr hasattr hash hex int isinstance issubclass iter len list map max min next object open ord pow print range repr reversed round set slice sorted str sum super tuple type zip Exception ValueError TypeError KeyError'.split(' '));
 
-function highlight(code: string): ReactNode[] {
+export function highlight(code: string): ReactNode[] {
   const output: ReactNode[]=[];
   let end=0, previousWord='';
   for (const match of code.matchAll(tokens)) {
@@ -36,7 +36,7 @@ export function sourceSnippet(source: string | undefined, fallback: string, loca
   return location.end <= lines.length ? lines.slice(location.start-1,location.end).join('\n') : fallback;
 }
 
-export function PythonCode({ code, focus, startLine = 1 }: { code: string; focus?: string; startLine?: number }) {
+export function PythonCode({ code, focus, startLine = 1, mark }: { code: string; focus?: string; startLine?: number; mark?: { start: number; end: number } | null }) {
   const content=useMemo(()=>{
     const start = focus ? code.lastIndexOf(focus) : -1;
     return start < 0 || !focus ? highlight(code) : [<span key="before">{highlight(code.slice(0,start))}</span>, <mark className="python-focus" key="focus">{highlight(focus)}</mark>, <span key="after">{highlight(code.slice(start+focus.length))}</span>];
@@ -44,6 +44,7 @@ export function PythonCode({ code, focus, startLine = 1 }: { code: string; focus
   const lineCount = code.split(/\r\n|\r|\n/).length;
   return <pre className="python-code" aria-label="읽기 전용 Python 코드">
     <span className="python-line-numbers" aria-hidden="true">{Array.from({ length: lineCount }, (_, index) => <span key={index}>{startLine+index}</span>)}</span>
-    <code>{content}</code>
+    <code>{mark && mark.end >= startLine && mark.start < startLine + lineCount && <span className="python-line-mark" aria-hidden="true"
+      style={{ top: `calc(${Math.max(0, mark.start - startLine)} * 1lh)`, height: `calc(${Math.min(mark.end, startLine + lineCount - 1) - Math.max(mark.start, startLine) + 1} * 1lh)` }} />}{content}</code>
   </pre>;
 }

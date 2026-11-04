@@ -179,6 +179,9 @@ def view(s):
     result={**s,'runs':runs,'condition_variant':condition_variant(s['condition'],s.get('study_mode')),
             'run':runs[s['cursor']] if s['cursor']>=0 else None}
     if s.get('study_task'):result['study_task']={**s['study_task'],'target_visibility':'participant'}
+    if s.get('preview'):
+        r=s['preview']['run']
+        result['preview']={**s['preview'],'run':present_run(annotate_run({**r,'stages':[dict(stage) for stage in r['stages']]}))}
     return result
 
 
@@ -195,6 +198,7 @@ def participant_view(payload):
         return {k:v for k,v in run.items() if k!='comparison'} if run else run
     result['runs']=[redact_run(r) for r in payload['runs']]
     if 'run' in payload:result['run']=redact_run(payload['run'])
+    if payload.get('preview'):result['preview']={**payload['preview'],'run':redact_run(payload['preview']['run'])}
     if isinstance(payload.get('error'),dict):
         result['error']={'phase':payload['error'].get('phase'),
                          'message':'새 실행이 완료되지 않았습니다. 이전 실행 결과를 확인하거나 다시 요청해 주세요.'}
@@ -352,6 +356,7 @@ class Generate(BaseModel):
     context: dict | None = None
     scope: str = 'pipeline'
     base_run_id: str | None = None
+    preview: bool = False
 
 
 @app.post('/api/sessions/{sid}/generate')
@@ -362,6 +367,8 @@ def generate(sid: str, body: Generate):
         revision = body.request is not None
         if s.get('study_mode')==prototype.MODE and not revision and body.context:
             raise HTTPException(422,'초기 생성에는 Input과 Target 외의 과제 설명을 전달할 수 없습니다.')
+        if body.preview and not revision:
+            raise HTTPException(422, '미리보기는 수정 요청에만 사용할 수 있습니다.')
         if s.get('study_task') and not revision:
             raise HTTPException(409,'이 과제의 초기 코드는 고정되어 있습니다. 새 과제를 시작하거나 자연어 수정 요청을 사용하세요.')
         if revision and (not prev or not body.request.strip()):
@@ -395,7 +402,8 @@ def generate(sid: str, body: Generate):
         started = time.perf_counter()
         attempt_id = str(uuid.uuid4())
         prefix = 'revision' if revision else 'generation'
-        event(s, f'{prefix}_requested', {'request': body.request, 'context': body.context, 'scope': body.scope, 'base_run_id': prev['id'] if prev else None, 'review_ms': review_duration(s), 'attempt_id': attempt_id})
+        event(s, f'{prefix}_requested', {'request': body.request, 'context': body.context, 'scope': body.scope, 'base_run_id': prev['id'] if prev else None, 'review_ms': review_duration(s), 'attempt_id': attempt_id, 'preview': body.preview})
+        s.pop('preview', None)
         s.update(status='generating', error=None, confirmed=None)
         save(s)
         phase, proposal, plan = 'generation', None, None
@@ -425,6 +433,13 @@ def generate(sid: str, body: Generate):
                     'interaction': 'selection-action-v2' if (body.context or {}).get('interaction') == 'selection-action-v2' else 'anchored-comment-v1'}
             event(s, 'revision_execution_completed' if revision else 'execution_completed',
                   {'execution_ms': r['execution_ms'], 'processing_ms': round((time.perf_counter() - started) * 1000, 2), 'attempt_id': attempt_id})
+            if body.preview:
+                # Keep the candidate aside: the current result stays until the participant applies it.
+                s['runs'].pop()
+                s['cursor'] = next(i for i, v in enumerate(s['runs']) if v['id'] == prev['id'])
+                s['preview'] = {'run': r, 'request': body.request, 'scope': body.scope, 'context': body.context,
+                                'base_run_id': prev['id'], 'attempt_id': attempt_id, 'at': now()}
+                event(s, 'revision_preview_ready', {'attempt_id': attempt_id, 'preview_run_id': r['id'], 'base_run_id': prev['id']})
         except Exception as exc:
             s.update(status='failed', error={'phase': phase, 'message': str(exc)[:2000],
                      'candidate_code': plan['code'] if plan else proposal.code if proposal else None,
@@ -465,6 +480,35 @@ def log(sid: str, body: EventBody):
     return {'ok': True}
 
 
+class PreviewDecision(BaseModel):
+    run_id: str
+
+
+@app.post('/api/sessions/{sid}/preview/{decision}')
+def decide_preview(sid: str, decision: str, body: PreviewDecision):
+    if decision not in ('apply', 'discard'):
+        raise HTTPException(404, 'Not Found')
+    with lock(sid):
+        s = read(sid)
+        pending = s.get('preview')
+        if not pending or pending['run']['id'] != body.run_id:
+            raise HTTPException(409, '미리보기가 바뀌었습니다. 다시 요청해 주세요.')
+        if s.get('confirmed'):
+            raise HTTPException(409, '확정한 결과는 바꿀 수 없습니다.')
+        prev = current(s)
+        if decision == 'apply':
+            if not prev or prev['id'] != pending['base_run_id']:
+                raise HTTPException(409, '기준 실행 버전이 달라졌습니다. 다시 요청해 주세요.')
+            s['runs'].append(pending['run'])
+            s['cursor'] = len(s['runs']) - 1
+        s.pop('preview')
+        s.update(status='ready', error=None)
+        event(s, f'revision_preview_{"applied" if decision == "apply" else "discarded"}',
+              {'attempt_id': pending['attempt_id'], 'preview_run_id': body.run_id, 'base_run_id': pending['base_run_id']})
+        save(s)
+        return view(s)
+
+
 class Condition(BaseModel):
     condition: str
 
@@ -497,6 +541,7 @@ def undo(sid: str):
             s.update(status='ready', error=None, confirmed=None)
         else:
             raise HTTPException(422, '되돌릴 실행이 없습니다.')
+        s.pop('preview', None)
         event(s, 'undo', {'from_run_id': r['id'] if r else None, 'to_run_id': current(s)['id']})
         event(s, 'review_resumed')
         save(s)
@@ -510,6 +555,7 @@ def confirm(sid: str):
         if s['status'] != 'ready' or not current(s):
             raise HTTPException(422, '현재 성공한 실행 결과가 있어야 확정할 수 있습니다.')
         if not s['confirmed']:
+            s.pop('preview', None)
             s['confirmed'] = {'at': now(), 'run_id': current(s)['id']}
             event(s, 'final_confirmed', {'review_ms': review_duration(s), 'output': current(s)['stages'][-1]['table'], 'code': current(s)['code']})
             save(s)

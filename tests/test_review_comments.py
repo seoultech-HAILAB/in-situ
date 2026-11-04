@@ -152,3 +152,27 @@ def test_operation_is_scoped_and_events_are_versioned(review_session):
         }).status_code == 200
     exported = client.get(f"/api/sessions/{s['id']}/export").json()
     assert exported['events'][-1]['execution_version'] == s['run']['id']
+
+
+def test_preview_keeps_current_run_until_applied(review_session):
+    client, s, _ = review_session
+    step = s['run']['stages'][1]['id']
+    body = {'request': 'qty 2 포함', 'scope': 'step', 'base_run_id': s['run']['id'], 'context': {'step_id': step}, 'preview': True}
+    previewed = client.post(f"/api/sessions/{s['id']}/generate", json=body).json()
+    assert previewed['run']['id'] == s['run']['id'] and len(previewed['runs']) == 1
+    candidate = previewed['preview']['run']
+    assert len(candidate['stages'][-1]['table']['rows']) == 2
+    hidden = client.get(f"/api/sessions/{s['id']}", headers={'X-Trace-View': 'participant'}).json()
+    assert 'comparison' not in hidden['preview']['run']
+
+    assert client.post(f"/api/sessions/{s['id']}/preview/apply", json={'run_id': 'other'}).status_code == 409
+    discarded = client.post(f"/api/sessions/{s['id']}/preview/discard", json={'run_id': candidate['id']}).json()
+    assert 'preview' not in discarded and discarded['run']['id'] == s['run']['id']
+
+    candidate = client.post(f"/api/sessions/{s['id']}/generate", json=body).json()['preview']['run']
+    applied = client.post(f"/api/sessions/{s['id']}/preview/apply", json={'run_id': candidate['id']}).json()
+    assert applied['run']['id'] == candidate['id'] and applied['run']['parent_run_id'] == s['run']['id']
+    assert 'preview' not in applied
+    events = [e['event'] for e in json.loads((server.STORE / f"{s['id']}.json").read_text(encoding='utf-8'))['events']]
+    assert events.count('revision_preview_ready') == 2
+    assert 'revision_preview_discarded' in events and 'revision_preview_applied' in events
