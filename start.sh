@@ -12,6 +12,12 @@ if [ ! -f dist/index.html ]; then
   npm ci
   npm run build
 fi
+# Rebuild the workspace so source updates appear on the next launch.
+(
+  cd web
+  if [ ! -d node_modules/@tailwindcss/postcss ]; then npm ci; fi
+  npm run build
+)
 unset TRACE_LEGACY_AUTH TRACE_ACCESS_FILE
 trace_port="${TRACE_PORT:-8001}"
 printf '\nTRACE: http://127.0.0.1:%s/?research=1\nPress Ctrl+C to stop.\n' "$trace_port"

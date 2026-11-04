@@ -5,6 +5,7 @@ import platform
 import threading
 import time
 import uuid
+import sys
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,11 +24,14 @@ from .access import gate, origins, request_identity
 from .pilot import Feedback, session_summary, csv_text
 from .pilot_plan import progress as pilot_progress
 from . import explanations
+from .transformations import annotate_run
+from .transformation_selection import selected_transformation, validate_selected_edit
 from . import candidates
 from .review_context import resolve_review_target
 from .review_presentation import present_run
 from . import prototype
 from . import judgments
+from . import experiment
 from .conditions import normalize as normalize_condition, VARIANTS as CONDITION_VARIANTS
 from .generator import (DEMO_INPUT, DEMO_REQUIREMENTS, DEMO_TARGET,
                         OpenAIGenerator, demo_code, revise_demo, DEFAULT_MODEL,
@@ -42,7 +46,7 @@ if (ROOT / '.env').exists():
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 STORE = Path(os.getenv('TRACE_DATA_DIR', str(ROOT / '.local' / 'sessions'))).resolve()
 STORE.mkdir(parents=True, exist_ok=True)
-app = FastAPI(title='Trace table research', version='0.1.0')
+app = FastAPI(title='situ', version='0.1.0')
 generator = OpenAIGenerator()
 locks = {}
 locks_guard = threading.Lock()
@@ -78,6 +82,7 @@ def read(sid):
     if not p.exists():
         raise HTTPException(404, '세션을 찾을 수 없습니다.')
     s = json.loads(p.read_text(encoding='utf-8'))
+    experiment.authorize_session(sys.modules[__name__], s)
     who=request_identity.get()
     if who and who['role']=='participant' and s.get('participant_id')!=who['participant_id']:
         raise HTTPException(404,'세션을 찾을 수 없습니다.')
@@ -97,6 +102,7 @@ def read(sid):
             r['operations'] = []
             r['cumulative_requirements'] = ([s['requirements']] if s['requirements'] else []) + [v['revision_request'] for v in s['runs'] if v.get('revision_request') and v['code_version'] <= r['code_version']]
             changed = True
+        annotate_run(r)
     s.setdefault('sources_csv', {})
     s.setdefault('sources', {})
     s['condition_variant'] = condition_variant(s['condition'],s.get('study_mode'))
@@ -130,6 +136,9 @@ def event(s, name, data=None):
                         'condition_variant': condition_variant(s['condition'],s.get('study_mode')),
                         'code_version': r['code_version'] if r else None,
                         'execution_version': r['id'] if r else None, 'data': data or {}})
+    if s.get('experiment_id'):
+        experiment.record(sys.modules[__name__],experiment.load(sys.modules[__name__],s['experiment_id']),
+                          'backend.event',s['events'][-1])
 
 
 def review_duration(s):
@@ -165,6 +174,7 @@ def execute(s, code, assumptions, mode, request=None, groups=None, prepared=None
               'runtime': {'python': platform.python_version(), 'pandas': pd.__version__, 'engine': 'native-python-v3' if plan['engine']=='python' else 'capability-pandas-v2', 'wall_limit_seconds': 20, 'process_memory_mb': 512 if os.name == 'nt' else 768, 'credentials_in_worker': False},
               'generator_settings': {'model': os.getenv('OPENAI_MODEL', DEFAULT_MODEL), 'reasoning_effort': os.getenv('OPENAI_REASONING_EFFORT'), 'contract': 'semantic-steps-and-patches-v3'} if mode == 'api' else None,
               'generator_model': os.getenv('OPENAI_MODEL', DEFAULT_MODEL) if mode == 'api' else None}
+    annotate_run(result)
     s['runs'].append(result)
     s['cursor'] = len(s['runs']) - 1
     s.update(status='ready', error=None, confirmed=None)
@@ -172,9 +182,11 @@ def execute(s, code, assumptions, mode, request=None, groups=None, prepared=None
 
 
 def view(s):
-    runs=[present_run(run) for run in s['runs']]
+    from .revision_preview import public_preview
+    runs=[present_run(annotate_run({**run,'stages':[dict(stage) for stage in run['stages']]})) for run in s['runs']]
     result={**s,'runs':runs,'condition_variant':condition_variant(s['condition'],s.get('study_mode')),
             'run':runs[s['cursor']] if s['cursor']>=0 else None}
+    result['pending_revision']=public_preview(s.get('pending_revision'),current(s))
     if s.get('study_task'):result['study_task']={**s['study_task'],'target_visibility':'participant'}
     return result
 
@@ -355,6 +367,7 @@ class Generate(BaseModel):
 def generate(sid: str, body: Generate):
     with lock(sid):
         s = read(sid)
+        if s.get('pending_revision'):raise HTTPException(409,'대기 중인 수정 후보를 먼저 승인하거나 거부하세요.')
         prev = current(s)
         revision = body.request is not None
         if s.get('study_mode')==prototype.MODE and not revision and body.context:
@@ -373,12 +386,16 @@ def generate(sid: str, body: Generate):
         selected = next((st for st in (prev or {}).get('stages', []) if st['id'] == target_id), None)
         try:
             review = resolve_review_target(prev, body.context or {}, body.scope) if revision else None
+            transformation = selected_transformation(prev,body.context or {}) if revision else None
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         model_context = {**(body.context or {}), 'scope': body.scope, 'base_run_id': prev['id'] if prev else None,
                          'pipeline': prev.get('pipeline') if prev else None, 'target_step': selected,
                          'cumulative_requirements': prev.get('cumulative_requirements', []) if prev else [],
                          'source_tables': s.get('sources_csv', {})}
+        if transformation:
+            model_context['selected_transformation']=transformation
+            model_context['transformation_edit_rule']='Edit only selected_transformation.code in step scope.'
         if review:
             target = review['target']
             model_context['review_target'] = review
@@ -408,8 +425,10 @@ def generate(sid: str, body: Generate):
             plan = patch(prev, proposal.changes, proposal.base_run_id, body.scope, target_id) if proposal.changes else prepare(proposal.code, proposal.steps or None, prev,engine=s.get('execution_engine','capability'))
             if revision:
                 validate_scope(plan, prev, body.scope, target_id)
+                validate_selected_edit(plan['code'],prev,transformation,body.scope)
             event(s, 'revision_execution_started' if revision else 'execution_started', {'attempt_id': attempt_id})
             r = execute(s, plan['code'], proposal.assumptions, mode, body.request, prepared=plan)
+            if transformation:r['transformation_edit']={'target_id':transformation['id'],'base_run_id':prev['id'],'code_location':transformation['code_location']}
             if review:
                 r['review_comment'] = {'target': review['target'], 'request': body.request,
                     'scope': body.scope, 'base_run_id': prev['id'], 'base_code_version': prev['code_version'],
@@ -427,6 +446,12 @@ def generate(sid: str, body: Generate):
                    'last_success_run_id': current(s)['id'] if current(s) else None})
         save(s)
         return view(s)
+
+
+from .revision_preview import install as install_revision_preview
+install_revision_preview(app)
+from .execution_observations import install as install_execution_observations
+install_execution_observations(app)
 
 
 class EventBody(BaseModel):
@@ -476,11 +501,18 @@ def condition(sid: str, body: Condition):
         return view(s)
 
 
+class UndoRequest(BaseModel):
+    base_run_id: str | None = None
+
+
 @app.post('/api/sessions/{sid}/undo')
-def undo(sid: str):
+def undo(sid: str, body: UndoRequest | None = None):
     with lock(sid):
         s = read(sid)
+        if s.get('pending_revision'):raise HTTPException(409,'대기 중인 수정 후보를 먼저 승인하거나 거부하세요.')
         r = current(s)
+        if body and body.base_run_id and (not r or body.base_run_id!=r['id']):
+            raise HTTPException(409, '실행 버전이 바뀌었습니다. 최신 수정 기록을 다시 불러오세요.')
         if s['status'] == 'failed' and r:
             s.update(status='ready', error=None, confirmed=None)
         elif r and r.get('parent_run_id'):
@@ -498,6 +530,7 @@ def undo(sid: str):
 def confirm(sid: str):
     with lock(sid):
         s = read(sid)
+        if s.get('pending_revision'):raise HTTPException(409,'대기 중인 수정 후보를 먼저 승인하거나 거부하세요.')
         if s['status'] != 'ready' or not current(s):
             raise HTTPException(422, '현재 성공한 실행 결과가 있어야 확정할 수 있습니다.')
         if not s['confirmed']:
@@ -519,6 +552,7 @@ class Code(BaseModel):
 def research_code(sid: str, body: Code):
     with lock(sid):
         s = read(sid)
+        if s.get('pending_revision'):raise HTTPException(409,'대기 중인 수정 후보를 먼저 승인하거나 거부하세요.')
         plan=None
         attempt_id=str(uuid.uuid4())
         try:
@@ -834,6 +868,7 @@ def pilot_feedback(sid: str,body: Feedback):
 
 class ExplainRun(BaseModel):
     run_id: str
+    refresh_transformations: bool = False
 
 
 @app.post('/api/sessions/{sid}/explanations')
@@ -841,14 +876,16 @@ def explain_run(sid: str,body: ExplainRun):
     with lock(sid):
         s=read(sid);r=current(s)
         if not r or r['id']!=body.run_id:raise HTTPException(409,'실행 버전이 바뀌었습니다. 현재 실행을 다시 여세요.')
-        if r.get('explanation_status')=='ready' and r.get('explanation_meta',{}).get('fingerprint')==explanations.fingerprint(r):return view(s)
+        if not body.refresh_transformations and r.get('explanation_status')=='ready' and r.get('explanation_meta',{}).get('fingerprint')==explanations.fingerprint(r):return view(s)
         snapshot=json.loads(json.dumps(r,ensure_ascii=False))
-    try:bundle,cached=explanations.obtain(snapshot);failure=None
+    try:
+        bundle,cached=explanations.obtain(snapshot,require_transformations=True) if body.refresh_transformations else explanations.obtain(snapshot)
+        failure=None
     except Exception as exc:bundle=None;cached=False;failure=str(exc)[:500]
     with lock(sid):
         s=read(sid);r=current(s)
         if not r or r['id']!=body.run_id:raise HTTPException(409,'설명 준비 중 실행 버전이 바뀌었습니다. 현재 실행을 다시 여세요.')
-        if bundle and r.get('explanation_status')=='ready' and r.get('explanation_meta',{}).get('fingerprint')==bundle['fingerprint']:return view(s)
+        if not body.refresh_transformations and bundle and r.get('explanation_status')=='ready' and r.get('explanation_meta',{}).get('fingerprint')==bundle['fingerprint']:return view(s)
         if bundle:
             explanations.attach(r,bundle,cached)
             event(s,'step_explanations_ready',{'source':'llm','model':bundle['model'],'prompt_version':bundle['prompt_version'],
@@ -974,6 +1011,9 @@ def discard_pilot(body: DiscardPilot):
     return {'ok':True,'discarded':list(items),'recovery_batch':batch}
 
 
+experiment.register(sys.modules[__name__])
+
+
 @app.middleware('http')
 async def local_guard(request: Request, call_next):
     denied = await gate(request)
@@ -993,13 +1033,55 @@ async def local_guard(request: Request, call_next):
     if length > 25_000_000:
         return Response('요청 크기가 너무 큽니다.', status_code=413)
     identity_token=request_identity.set(request.state.access_identity)
+    study_auth={'id':request.headers.get('x-study-id'), 'token':request.headers.get('x-study-token')}
+    study_token=experiment.credentials.set(study_auth)
+    study_state=None
+    study_verified=False
+    request_started=time.perf_counter()
     try:
+        if study_auth['id']:
+            study_state=experiment.load(sys.modules[__name__],study_auth['id'])
+            experiment.verify(study_state,study_auth['token'])
+            study_verified=True
+        route=request.url.path
+        if route.startswith('/api/sessions/'):
+            sid=route.split('/')[3]
+            session=read(sid)
+            if study_auth['id'] and session.get('experiment_id')!=study_auth['id']:
+                raise HTTPException(403,'이 실험의 세션이 아닙니다.')
+            if session.get('experiment_id') and route.endswith(('/condition','/research-code','/generate','/confirm')):
+                raise HTTPException(403,'실험의 과제와 조건은 고정되어 있습니다.')
+            experiment.authorize_session(sys.modules[__name__],session,
+                mutate=request.method=='POST' and not route.endswith('/events'),
+                allow_preparing=route.endswith(('/explanations','/execution-observations')))
         response = await call_next(request)
+        if study_state and route.startswith('/api/sessions/') and request.method=='POST' and not route.endswith('/events') and response.status_code < 400:
+            with lock(sid):
+                experiment.snapshot(sys.modules[__name__],read(sid),route)
+        if study_state and route.startswith('/api/') and not route.endswith('/events'):
+            experiment.record(sys.modules[__name__],study_state,'http.completed',{
+                'method':request.method,'path':route,'status':response.status_code,
+                'duration_ms':round((time.perf_counter()-request_started)*1000,2),
+                'request_id':request.headers.get('x-request-id')})
+    except HTTPException as exc:
+        if study_verified:
+            experiment.record(sys.modules[__name__],study_state,'http.failed',{
+                'method':request.method,'path':request.url.path,'status':exc.status_code,
+                'duration_ms':round((time.perf_counter()-request_started)*1000,2),'message':str(exc.detail)[:2000]})
+        from fastapi.responses import JSONResponse
+        response=JSONResponse({'detail':exc.detail},status_code=exc.status_code)
+    except Exception as exc:
+        if study_verified:
+            experiment.record(sys.modules[__name__],study_state,'http.failed',{
+                'method':request.method,'path':request.url.path,'status':500,
+                'duration_ms':round((time.perf_counter()-request_started)*1000,2),'error_type':type(exc).__name__})
+        raise
     finally:
+        experiment.credentials.reset(study_token)
         request_identity.reset(identity_token)
     if (request.state.access_role=='participant' or request.headers.get('x-trace-view')=='participant') and response.headers.get('content-type','').startswith('application/json'):
-        chunks=[chunk async for chunk in response.body_iterator]
-        data=json.loads(b''.join(chunks))
+        raw=b''.join([chunk async for chunk in response.body_iterator]) if hasattr(response,'body_iterator') else response.body
+        data=json.loads(raw)
         headers={k:v for k,v in response.headers.items() if k.lower()!='content-length'}
         response=Response(json.dumps(participant_view(data),ensure_ascii=False),status_code=response.status_code,headers=headers,media_type='application/json')
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -1010,10 +1092,47 @@ async def local_guard(request: Request, call_next):
 
 if (ROOT / 'dist' / 'assets').exists():
     app.mount('/assets', StaticFiles(directory=ROOT / 'dist' / 'assets'), name='assets')
+# Participant UI: Next.js static export in web/out. The Vite UI stays at /legacy
+# for researcher tools that the new UI does not cover.
+WEB = ROOT / 'web' / 'out'
+if (WEB / '_next').exists():
+    app.mount('/_next', StaticFiles(directory=WEB / '_next'), name='next')
+
+
+@app.get('/legacy')
+def legacy_index():
+    if not (ROOT / 'dist' / 'index.html').exists():
+        raise HTTPException(503, 'npm run build 후 서버를 시작하거나 Vite 개발 서버를 사용하세요.')
+    return FileResponse(ROOT / 'dist' / 'index.html')
+
+
+@app.get('/in-situ')
+def in_situ_index():
+    file = WEB / 'in-situ.html'
+    if not file.exists():
+        raise HTTPException(503, 'web/에서 npm run build 후 서버를 시작하세요.')
+    return FileResponse(file)
+
+
+@app.get('/ex-situ')
+def ex_situ_index():
+    file = WEB / 'ex-situ.html'
+    if not file.exists():
+        raise HTTPException(503, 'web/에서 npm run build 후 서버를 시작하세요.')
+    return FileResponse(file)
 
 
 @app.get('/')
 def index():
-    if not (ROOT / 'dist' / 'index.html').exists():
-        raise HTTPException(503, 'npm run build 후 서버를 시작하거나 Vite 개발 서버를 사용하세요.')
-    return FileResponse(ROOT / 'dist' / 'index.html')
+    if (WEB / 'index.html').exists():
+        return FileResponse(WEB / 'index.html')
+    return legacy_index()
+
+
+@app.get('/{name}')
+def web_root_file(name: str):
+    # Top-level export files only (icon.svg, 404.html); no directory traversal.
+    file = WEB / name
+    if '/' in name or name.startswith('.') or not file.is_file():
+        raise HTTPException(404, 'Not Found')
+    return FileResponse(file)

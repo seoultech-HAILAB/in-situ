@@ -1,0 +1,65 @@
+import type { Stage, Table } from "@/lib/trace";
+import { explainedTransformations, transformationDetails } from "./workspace-diff";
+import { TransformationDetails } from "./transformation-details";
+
+type ExplanationItem = NonNullable<Stage["transformations"]>[number];
+type ChangeKind = "added" | "changed" | "removed";
+const CHANGE_NAMES = { added: "추가", changed: "변환", removed: "제거" };
+
+function changeHeadings(item: ExplanationItem): { names: string[]; kind?: ChangeKind }[] {
+  const bindings = item.revision_effects ?? item.execution_effects ?? [];
+  const columns = { added: new Set<string>(), changed: new Set<string>(), removed: new Set<string>() };
+  for (const effect of bindings) {
+    for (const kind of ["added", "changed", "removed"] as const) {
+      for (const column of effect.columns[kind]) columns[kind].add(column);
+    }
+  }
+  // Clearing cells or removing rows does not remove the column itself.
+  // Treat changes within surviving columns as transformations, and describe
+  // row-only operations separately rather than coloring every field red.
+  for (const effect of bindings) {
+    const rowEvents = new Set([...effect.rows.added, ...effect.rows.removed]);
+    for (const cells of Object.values(effect.cells)) {
+      for (const [column,rows] of Object.entries(cells)) {
+        if (rows.some(row => !rowEvents.has(row)) && !columns.added.has(column) && !columns.removed.has(column)) columns.changed.add(column);
+      }
+    }
+  }
+  const headings = (["added", "changed", "removed"] as const)
+    .filter(kind => columns[kind].size)
+    .map(kind => ({ kind, names: [...columns[kind]] }));
+  if (headings.length) return headings;
+  const rowHeadings = (["added", "removed", "changed"] as const)
+    .filter(kind => bindings.some(effect => effect.rows[kind].length))
+    .map(kind => ({ kind, names: [kind === "changed" && bindings.some(effect => effect.rows.reordered.length) ? "행 순서" : "행"] }));
+  if (rowHeadings.length) return rowHeadings;
+  return [{ names: item.output_columns.length ? item.output_columns : ["열 대응 미확인"] }];
+}
+
+export function ExSituExplanation({ step, number, label, inputView = false, filterStep, comparison }: {
+  step?: Stage; number: number; label?: string; inputView?: boolean; filterStep?: Stage; comparison?: Table;
+}) {
+  const items = step ? [...explainedTransformations(step,comparison,filterStep)].sort((a,b) => {
+    const left=a.statement_location ?? a.code_location, right=b.statement_location ?? b.code_location;
+    return left.start-right.start || (left.start_column ?? 0)-(right.start_column ?? 0)
+      || a.code_location.start-b.code_location.start || (a.code_location.start_column ?? 0)-(b.code_location.start_column ?? 0);
+  }) : [];
+  const filter = filterStep?.transformations?.[0];
+  return <section className="explanation-pane" aria-label="코드 자연어 설명">
+    <div className="pane-toolbar"><span>코드 설명</span>
+      {(step || inputView) && <span className="explanation-step-label">{label ?? `Step ${String(number).padStart(2,"0")}`}</span>}
+    </div>
+    <div className="explanation-scroll" key={`${step?.execution_version}:${step?.id}`}>
+      {!step ? inputView ? null : <div className="explanation-empty">과제를 실행하면 선택한 Step의 코드 설명이 여기에 표시됩니다.</div> : <>
+        {items.length > 0 ? <ol className="explanation-operations">{items.map(item => <li key={item.id}>
+          <h3 className="explanation-change-heading">{changeHeadings(item).map((heading,index) => <span key={index}
+            className={`explanation-change-group${heading.kind ? ` change-${heading.kind}` : ""}`} data-change-kind={heading.kind}>
+            <span className="explanation-change-columns">{heading.names.join(", ")}</span>
+            {heading.kind && <span className="explanation-change-type">{CHANGE_NAMES[heading.kind]}</span>}
+          </span>)}{item.id === filter?.id && <span className="step-filter-count">{filterStep!.input!.rows.length} → {filterStep!.table.rows.length}행</span>}</h3>
+          <TransformationDetails item={transformationDetails(item)} plainCode />
+        </li>)}</ol> : <p className="explanation-empty">연결된 변환 설명이 없습니다.</p>}
+      </>}
+    </div>
+  </section>;
+}

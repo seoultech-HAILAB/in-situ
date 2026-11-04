@@ -1,0 +1,168 @@
+"""Auxiliary tables consumed by an executed operation in this Step only.
+
+Do not walk source lineage, parent Steps or conservative dependency lists.
+Conservative whole-Step inputs alone cannot establish actual multi-table use.
+Native call snapshots can establish it even when detailed replay is unavailable.
+"""
+import ast
+import hashlib
+import json
+
+from .table_call_observations import contributing_calls, contributing_expressions, call_key, VERSION as TABLE_CALLS_VERSION
+
+
+def expression(run,op):
+    loc=op.get('expression_location') or op.get('code_location')
+    if not loc:return None
+    nodes=[n for n in ast.walk(ast.parse(run['code'])) if hasattr(n,'lineno') and n.lineno==loc['start'] and n.end_lineno==loc['end']]
+    exact=[n for n in nodes if n.col_offset==loc.get('start_column') and n.end_col_offset==loc.get('end_column')]
+    return next((n for n in exact if isinstance(n,ast.Call)),None) or (exact[0] if exact else next((n for n in nodes if isinstance(n,ast.Call)),None) or (nodes[0] if nodes else None))
+
+
+def input_name(item,fallback):
+    ref=item.get('ref','')
+    if ref.startswith('observed-input:tables:'):return ref[len('observed-input:tables:'):]
+    return item.get('variable') or (ref.split(':',1)[1] if ref.startswith(('observed-input:','source:')) else fallback)
+
+
+def label(node,fallback):
+    if isinstance(node,ast.Name):return node.id
+    if isinstance(node,ast.Subscript) and isinstance(node.value,ast.Name) and node.value.id=='tables' and isinstance(node.slice,ast.Constant):return str(node.slice.value)
+    if isinstance(node,(ast.Call,ast.Attribute,ast.Subscript)):
+        return label(node.func.value if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute) else getattr(node,'value',None),fallback)
+    return fallback
+
+
+def description(op,node):
+    params=op.get('params',{});arguments=params.get('arguments',{})
+    if op['kind'] in ('merge','join'):
+        keys=params.get('keys') or arguments.get('on') or arguments.get('right_on') or []
+        if isinstance(keys,str):keys=[keys]
+        basis=', '.join(f'“{key}”' for key in keys)+' 열' if keys else '행 인덱스'
+        how=params.get('how') or arguments.get('how') or ('left' if op['kind']=='join' else 'inner')
+        rule={'left':'기존 표의 행을 유지하며 연결합니다.','inner':'양쪽에 일치하는 행을 연결합니다.',
+              'right':'이 표의 행을 유지하며 연결합니다.','outer':'양쪽의 모든 행을 포함해 연결합니다.',
+              'cross':'양쪽 행의 모든 조합을 만듭니다.'}.get(how,'다른 입력 표와 연결합니다.')
+        return ('이 표를 사용해 '+rule) if how=='cross' else basis+'을 기준으로 이 표의 정보를 '+rule
+    if op['kind']=='concat':
+        axis=next((kw.value for kw in node.keywords if kw.arg=='axis'),None) if isinstance(node,ast.Call) else None
+        if isinstance(axis,ast.Constant) and axis.value in (1,'columns'):return '행 인덱스를 맞춰 이 표의 열을 옆으로 이어 붙입니다.'
+        if axis is None or isinstance(axis,ast.Constant) and axis.value in (0,'index'):return '이 표의 행을 다른 입력 표의 행과 이어 붙입니다.'
+        return '이 표를 다른 입력 표와 이어 붙여 결과를 구성합니다.'
+    if op['kind']=='filter':return '이 표에서 읽은 값을 현재 Step의 행 선택 조건에 사용합니다.'
+    return '이 표에서 읽은 값을 현재 Step의 결과 열 계산에 사용합니다.'
+
+
+def collect(run,stage):
+    result=[];seen=set()
+    def add(name,displayed,usage):
+        # Ignore tracing-only row IDs when deduplicating plain table cards.
+        signature=json.dumps([name,displayed['columns'],[row['values'] for row in displayed['rows']],
+                              {c:displayed['stats']['fields'][c]['dtype'] for c in displayed['columns']}],ensure_ascii=False,sort_keys=True)
+        identity=hashlib.sha256(signature.encode()).hexdigest()[:16]
+        if identity in seen:
+            existing=next(entry for entry in result if entry['id']==identity)
+            if usage not in existing['uses']:existing['uses'].append(usage)
+            return
+        seen.add(identity)
+        result.append({'id':identity,'name':name,'table':displayed,'uses':[usage]})
+    operations=stage.get('operations',[])
+    by_id={op['id']:op for op in operations}
+    live=set();pending=[stage.get('output_ref')]
+    while pending:
+        ref=pending.pop()
+        if ref in live or ref not in by_id:continue
+        live.add(ref)
+        pending.extend(item['ref'] for item in by_id[ref].get('inputs',[]))
+    contributing={item['statement_index'] for item in stage.get('transformations',[]) if item.get('contributes_to_output') is not False and item.get('method')!='observed_change'}
+    external_refs={item['ref'] for item in stage.get('inputs',[])}
+    external_names={item.get('variable') for item in stage.get('inputs',[])}
+    # Scope only: whether a frame variable existed before this Step. This does
+    # not follow its origin or propagate tables from earlier transformations.
+    earlier=[node for node in ast.parse(run['code']).body if node.end_lineno<(stage.get('code_location') or {}).get('start',0)]
+    external_names.update(n.id for node in earlier for n in ast.walk(node) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Store))
+    records=[op for op in operations if op['id'] in live]
+    records.extend(op for op in stage.get('operation_observations',[]) if op.get('statement_index') in contributing)
+    spec=next((s for s in run.get('pipeline',{}).get('steps',[]) if s['id']==stage['id']),None)
+    tree=ast.parse(run['code'])
+    indices=spec['statement_indices'] if spec else [i for i,node in enumerate(tree.body) if (stage.get('code_location') or {}).get('start',0)<=node.lineno<=(stage.get('code_location') or {}).get('end',0)]
+    output=stage.get('output_variable') or (spec or {}).get('observed_output_variable') or (spec or {}).get('output_variable')
+    executed={line for op in stage.get('executed_statements',[]) for line in op.get('executed_lines',[])}
+    nodes=[tree.body[i] for i in indices]
+    calls=contributing_calls(nodes,output,executed or None)
+    read_sites=contributing_expressions(nodes,output,executed or None,(ast.Subscript,))
+    covered_reads=set()
+    def site(op):
+        loc=op.get('expression_location') or op.get('code_location') or {}
+        return (loc.get('start'),loc.get('end'),loc.get('start_column'),loc.get('end_column'))
+    native=[op for op in stage.get('direct_table_calls',[]) if (node:=expression(run,op)) is not None and op.get('code')==ast.get_source_segment(run['code'],node)]
+    native_sites={site(op) for op in native}
+    # Actual calls are authoritative for these sites, including calls which a
+    # loop replay could not describe. A dead call must not reappear via replay.
+    records=[op for op in native if site(op) in calls]+[op for op in records if site(op) not in native_sites]
+    for op in records:
+        if any(op.get(key) is not None and op[key]!=run.get(key) for key in ('execution_version','code_version')):continue
+        inputs=op.get('inputs',[])
+        # Successful native calls and verified detailed replay provide actual
+        # operands. A whole-Step Python input list is only a conservative guess.
+        if len(inputs)<2 or op['kind'] not in ('merge','join','concat','derive','filter'):continue
+        node=expression(run,op)
+        names={n.id for n in ast.walk(node) if isinstance(n,ast.Name)} if node else set()
+        source_keys={str(n.slice.value) for n in ast.walk(node) if isinstance(n,ast.Subscript) and isinstance(n.value,ast.Name) and n.value.id=='tables' and isinstance(n.slice,ast.Constant)} if node else set()
+        for index,item in enumerate(inputs[1:],1):
+            name=input_name(item,f'보조 표 {index}')
+            if op['kind'] in ('derive','filter') and name not in names and name not in source_keys:
+                # Value.nodes may refer to a scalar/Series prepared in a prior
+                # Step. Without a direct frame reference it is propagated only.
+                continue
+            if op['kind'] in ('derive','filter') and not (
+                name in external_names or f'tables:{name}' in external_names or item.get('ref') in external_refs
+                or item.get('ref','').startswith('source:') or name=='input_df' and 'input' in external_refs
+            ):continue  # A temporary split/working table inside this Step is not an additional input table.
+            operand=None
+            if isinstance(node,ast.Call):
+                if op['kind'] in ('merge','join'):
+                    if isinstance(node.func,ast.Attribute) and isinstance(node.func.value,ast.Name) and node.func.value.id in ('pd','pandas'):
+                        operand=node.args[index] if len(node.args)>index else next((kw.value for kw in node.keywords if kw.arg=='right'),None)
+                    else:operand=node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg in ('right','other')),None)
+                elif op['kind']=='concat' and node.args:
+                    if isinstance(node.args[0],(ast.List,ast.Tuple)) and len(node.args[0].elts)>index:operand=node.args[0].elts[index]
+                    elif isinstance(node.args[0],ast.Name):
+                        name=f"{node.args[0].id}[{item['operand_key']!r}]" if 'operand_key' in item else node.args[0].id
+            name=label(operand,name)
+            # A cleaned merge/concat operand already represents the source
+            # read which produced it in this Step; do not duplicate its raw CSV.
+            binding=operand.id if isinstance(operand,ast.Name) else node.args[0].id if op['kind']=='concat' and isinstance(node,ast.Call) and node.args and isinstance(node.args[0],ast.Name) else name
+            covered_reads.update(contributing_expressions(nodes,binding,executed or None,(ast.Subscript,)))
+            if operand is not None:covered_reads.update(call_key(n) for n in ast.walk(operand) if isinstance(n,ast.Subscript))
+            usage={'text':description(op,node),'line':(op.get('expression_location') or op.get('code_location') or {}).get('start')}
+            add(name,item['table'],usage)
+    # A source table may be the only frame used to construct this Step's
+    # result (e.g. transpose a staff CSV). It still needs an input card.
+    # Reads nested in combination calls are represented by their actual call
+    # operands above, including the exclusion of failed/unused calls.
+    combination_reads={call_key(part) for node in nodes for call in ast.walk(node)
+        if isinstance(call,ast.Call) and (isinstance(call.func,ast.Attribute) and call.func.attr in ('merge','join','concat')
+            or isinstance(call.func,ast.Name) and call.func.id in ('merge','concat'))
+        for part in ast.walk(call) if isinstance(part,ast.Subscript)}
+    for read in stage.get('direct_table_reads',[]):
+        loc=read.get('code_location') or {}
+        key=(loc.get('start'),loc.get('end'),loc.get('start_column'),loc.get('end_column'))
+        if key not in read_sites or key in covered_reads or key in combination_reads:continue
+        node=next((n for n in ast.walk(tree) if isinstance(n,ast.Subscript) and call_key(n)==key),None)
+        if node is None or ast.get_source_segment(run['code'],node)!=read.get('code'):continue
+        parents={child:parent for root in nodes for parent in ast.walk(root) for child in ast.iter_child_nodes(parent)}
+        path=[];parent=node
+        while parent in parents:
+            parent=parents[parent];path.append(parent)
+            if isinstance(parent,ast.stmt):break
+        transpose=any(isinstance(n,ast.Attribute) and n.attr=='T' or isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='transpose' for n in path)
+        text='이 표의 행과 열을 바꿔 현재 Step의 입력으로 사용합니다.' if transpose else '이 표를 직접 읽어 현재 Step의 결과를 만듭니다.'
+        add(read['name'],read['table'],{'text':text,'line':loc.get('start')})
+    return result
+
+
+def annotate(run):
+    for stage in run.get('stages',[])[1:]:stage['direct_tables']=collect(run,stage)
+    if run.get('stages',[])[1:] and all(stage.get('direct_table_observations_version')==TABLE_CALLS_VERSION for stage in run['stages'][1:]):
+        run['direct_table_observations_version']=TABLE_CALLS_VERSION

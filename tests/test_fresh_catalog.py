@@ -1,4 +1,4 @@
-"""Every bundled task must open a complete review without credentials or local state."""
+"""Stored tasks remain executable while retired descriptions are invalidated."""
 import json
 import shutil
 from pathlib import Path
@@ -33,7 +33,7 @@ def test_empty_existing_install_gets_new_tasks_and_preserves_local_changes(tmp_p
     assert not local.exists()
 
 
-def test_all_tasks_execute_describe_switch_and_reopen_without_api_key(tmp_path,monkeypatch):
+def test_all_tasks_execute_switch_and_reopen_with_local_descriptions_without_api_key(tmp_path,monkeypatch):
     shutil.copytree(ROOT/'tasks',tmp_path/'tasks')
     monkeypatch.setattr(candidates,'ROOT',tmp_path)
     monkeypatch.delenv('TRACE_TASK_DIR',raising=False)
@@ -41,7 +41,7 @@ def test_all_tasks_execute_describe_switch_and_reopen_without_api_key(tmp_path,m
     monkeypatch.delenv('OPENAI_API_KEY',raising=False)
     monkeypatch.setenv('TRACE_EXPLANATION_DIR',str(tmp_path/'no-local-cache'))
     store=tmp_path/'sessions';store.mkdir();monkeypatch.setattr(server,'STORE',store)
-    def no_api(*args,**kwargs):raise AssertionError('Initial review must not call a model')
+    def no_api(*args,**kwargs):raise AssertionError('Old bundled prose must be regenerated')
     monkeypatch.setattr(explanations,'generate',no_api)
     with TestClient(server.app) as client:
         tasks=client.get('/api/woz-tasks').json()
@@ -58,14 +58,14 @@ def test_all_tasks_execute_describe_switch_and_reopen_without_api_key(tmp_path,m
             response=client.post(f'/api/sessions/{sid}/explanations',json={'run_id':rid})
             assert response.status_code==200,(cid,response.text)
             run=response.json()['run']
-            assert run['explanation_status']=='ready',(cid,run.get('explanation_error'))
+            assert run['explanation_status']=='failed' and 'regenerated' in run['explanation_error']
             for stage in run['stages'][1:]:
-                assert stage['nl_explanation']['text'] and 'column_explanations' in stage
-                assert all('column_explanations' in op for op in stage.get('operations',[]))
+                assert 'nl_explanation' not in stage
+                assert all(item['description']['text'] and item['description']['source']=='ast' and 'source_context' not in item for item in stage['transformations'])
             for condition in ('ex','in-situ'):
                 shown=client.post(f'/api/sessions/{sid}/condition',json={'condition':condition},headers={'X-Trace-View':'participant'}).json()['run']
                 assert shown['id']==rid and shown['stages']==run['stages']
-            assert client.get(f'/api/sessions/{sid}').json()['run']['explanation_status']=='ready'
+            assert client.get(f'/api/sessions/{sid}').json()['run']['explanation_status']=='failed'
 
 
 def test_explanation_key_ignores_library_dtype_labels_but_detects_actual_changes():

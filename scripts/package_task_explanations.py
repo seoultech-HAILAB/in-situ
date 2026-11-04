@@ -28,6 +28,8 @@ def main():
         run={'code':plan['code'],'stages':stages,'operations':operations}
         bundle,cached=explanations.obtain(run)
         artifact={key:bundle[key] for key in ('prompt_version','model','generated_at','steps','columns')}
+        if 'transformations' in bundle:artifact['transformations']=bundle['transformations']
+        if 'transformation_contract' in bundle:artifact['transformation_contract']=bundle['transformation_contract']
         artifact['observation_sha256']=explanations.observation_fingerprint(run)
         file=output/(artifact['observation_sha256']+'.json')
         file.write_text(json.dumps(artifact,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
